@@ -1,0 +1,234 @@
+/* ===========================================================================
+   PAPER EXPLAINER — giấy cắt xếp lớp, dọc 1080×1920
+   Ý tưởng: mỗi cảnh là một tờ giấy được ĐẶT XUỐNG tấm bìa kraft, không phải
+   một khối màu trượt vào. Mọi quyết định dưới đây phục vụ ảo giác đó.
+   Hai mực risograph (xanh + hoàng thổ) — bảng màu của xưởng in, không phải
+   terracotta mặc định.
+   =========================================================================== */
+
+:root {
+  --board: #b3a894;        /* bìa kraft — nền, cũng là màu chữ khoét thủng */
+  --board-deep: #4a4133;   /* đáy vết cắt */
+  --stock: #efe9dc;        /* giấy chính */
+  --stock-2: #ded5c3;      /* lớp giấy lót dưới */
+  --ink: #211f1c;          /* mực đen */
+  --ink-soft: #5d574c;     /* mực nhạt cho phụ đề */
+  --riso-blue: #2c5c86;    /* mực 1 */
+  --ochre: #d99a34;        /* mực 2 */
+
+  --pad: 78px;
+  --card-w: 916px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: "Inter", system-ui, sans-serif;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root { position: relative; width: 1080px; height: 1920px; overflow: hidden; background: var(--board); }
+
+/* ---- tấm bìa: sợi giấy + loang sáng nhẹ, tất định (SVG filter, không random) ---- */
+.board {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(120% 70% at 50% 12%, rgba(255,252,244,.32), transparent 62%),
+    radial-gradient(90% 60% at 50% 104%, rgba(60,50,34,.26), transparent 60%),
+    var(--board);
+}
+.grain {
+  position: absolute; inset: 0; opacity: .42; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/><feColorMatrix type='saturate' values='0'/></filter><rect width='180' height='180' filter='url(%23n)' opacity='.5'/></svg>");
+}
+
+/* ---- masthead: một dải giấy dán ngang, có băng keo giữ ---- */
+.masthead {
+  position: absolute; top: 56px; left: var(--pad); right: var(--pad); height: 96px;
+  background: var(--stock);
+  display: flex; align-items: center; gap: 22px; padding: 0 30px;
+  box-shadow: 0 2px 0 var(--stock-2), 0 12px 22px rgba(48,40,28,.26);
+  clip-path: polygon(0 3px, 99.4% 0, 100% calc(100% - 4px), .5% 100%);
+}
+.tape {
+  position: absolute; top: 36px; width: 132px; height: 42px;
+  background: rgba(240,232,210,.62);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.3);
+  transform: rotate(-2.4deg);
+}
+.tape.l { left: 118px; }
+.tape.r { right: 118px; transform: rotate(1.8deg); }
+
+.wordmark {
+  font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 40px; letter-spacing: .01em;
+  color: var(--riso-blue); text-transform: uppercase;
+}
+.wordmark-sub {
+  font-family: "JetBrains Mono", monospace; font-size: 21px; letter-spacing: .22em;
+  color: var(--ink-soft); text-transform: uppercase;
+}
+.datetag {
+  margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 22px;
+  letter-spacing: .12em; color: var(--ink-soft);
+}
+
+/* ---- thẻ giấy: lớp lót lệch + bóng đổ tạo độ dày ----
+   .scene chỉ định vị (là .clip — runtime điều khiển hiển thị, không animate).
+   .sheet là tờ giấy thật, mọi chuyển động diễn ra ở đây. */
+.stage { position: absolute; inset: 0; }
+.scene { position: absolute; top: 250px; left: var(--pad); width: var(--card-w);
+  display: flex; align-items: center; min-height: 1180px; }
+.card { position: relative; width: 100%; }
+
+.sheet {
+  position: relative;
+  padding: 74px 62px 66px;
+  background: var(--stock);
+  box-shadow:
+    0 3px 0 var(--stock-2),          /* mép giấy */
+    0 26px 44px rgba(48,40,28,.30),  /* bóng nổi */
+    0 6px 10px rgba(48,40,28,.18);
+}
+/* mép cắt tay: 4 biến thể luân phiên theo chỉ số cảnh, cố định nên seek ổn định */
+.sheet.c0 { clip-path: polygon(0 5px, 99.6% 0, 100% calc(100% - 7px), .4% 100%); }
+.sheet.c1 { clip-path: polygon(.3% 0, 100% 6px, 99.5% 100%, 0 calc(100% - 5px)); }
+.sheet.c2 { clip-path: polygon(0 3px, 99.4% 4px, 100% calc(100% - 3px), .6% 100%); }
+.sheet.c3 { clip-path: polygon(.5% 4px, 99.8% 0, 99.6% calc(100% - 6px), 0 100%); }
+
+/* Nội dung phải là positioned để vẽ ĐÈ LÊN .underlay.
+   .underlay là position:absolute nên theo thứ tự vẽ CSS nó nằm trên mọi phần
+   tử tĩnh cùng cấp. Phần tử nào được GSAP gắn transform thì tự tạo stacking
+   context nên vẫn nổi lên — nên lỗi này chỉ lộ ra ở phần tử KHÔNG animate
+   (nhãn biểu đồ) hoặc chỉ animate opacity (số trên cột). */
+.sheet > *:not(.underlay) { position: relative; }
+
+/* lớp giấy lót thò ra sau thẻ — cảm giác chồng nhiều tờ */
+.underlay {
+  position: absolute; left: 16px; right: -14px; top: 14px; bottom: -12px;
+  background: var(--stock-2);
+  box-shadow: 0 18px 30px rgba(48,40,28,.22);
+}
+
+/* ---- tab hồ sơ: nhô ra khỏi mép trên, mang tên chuyên mục ---- */
+.tab {
+  position: absolute; top: -40px; left: 54px; height: 56px; z-index: 3;
+  padding: 0 30px; display: flex; align-items: center;
+  background: var(--ochre);
+  font-family: "JetBrains Mono", monospace; font-size: 21px; font-weight: 700;
+  letter-spacing: .2em; text-transform: uppercase; color: #2b2213;
+  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 100%, 0 100%);
+  box-shadow: 0 6px 12px rgba(48,40,28,.28);
+}
+.tab.blue { background: var(--riso-blue); color: #eef3f8; }
+
+/* ---- KÝ HIỆU: chữ khoét thủng, lộ bìa kraft phía dưới ---- */
+.cutout {
+  font-family: "Montserrat", sans-serif; font-weight: 900;
+  color: #a89c86;
+  text-shadow:
+    0 2px 0 var(--board-deep),
+    0 6px 10px rgba(28,22,12,.55),
+    0 1px 0 rgba(0,0,0,.35);
+  letter-spacing: -.015em; line-height: .97;
+}
+
+/* ---- kiểu chữ chung ---- */
+.headline {
+  font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 82px; line-height: 1.03;
+  letter-spacing: -.018em; color: var(--ink);
+}
+.headline.sm { font-size: 66px; }
+.subhead {
+  margin-top: 30px; font-size: 37px; line-height: 1.42; color: var(--ink-soft); font-weight: 400;
+}
+.eyebrow {
+  font-family: "JetBrains Mono", monospace; font-size: 22px; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--riso-blue); margin-bottom: 26px;
+}
+.rule { height: 5px; background: var(--ink); margin: 34px 0 0; width: 190px; }
+
+/* ---- intro ---- */
+.intro-kicker {
+  font-family: "JetBrains Mono", monospace; font-size: 26px; letter-spacing: .3em;
+  text-transform: uppercase; color: var(--riso-blue); margin-bottom: 34px;
+}
+.intro-title { font-size: 138px; }
+.intro-sub { margin-top: 40px; font-size: 38px; color: var(--ink-soft); }
+
+/* ---- divider ---- */
+.sheet.divider { padding: 92px 62px; text-align: center; }
+.divider-text { font-size: 84px; }
+
+/* ---- stat ---- */
+.stat-value { font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 210px; line-height: .9; color: var(--riso-blue); letter-spacing: -.03em; }
+.stat-unit { font-family: "JetBrains Mono", monospace; font-size: 34px; letter-spacing: .18em; text-transform: uppercase; color: var(--ochre); margin-top: 14px; }
+.stat-label { margin-top: 34px; font-size: 36px; line-height: 1.4; color: var(--ink-soft); }
+
+/* ---- chart: cột giấy cắt ---- */
+/* Cột và nhãn là HAI HÀNG riêng, cùng gap nên vẫn thẳng cột nhau.
+   Lồng nhãn vào trong .bar tạo phụ thuộc vòng: chiều cao cột tính theo % của
+   vùng chứa, mà vùng chứa lại co theo nội dung — Chrome giải ra 0 và nhãn
+   biến mất không báo lỗi. */
+.bars { display: flex; align-items: flex-end; gap: 26px; height: 400px; margin-top: 46px; }
+.bar { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
+.bar-val { flex: 0 0 auto; text-align: center; font-family: "JetBrains Mono", monospace; font-size: 26px; color: var(--ink); margin-bottom: 10px; }
+.bar-col { flex: 0 0 auto; width: 100%; background: var(--ink-soft); box-shadow: 0 2px 0 rgba(48,40,28,.2); transform-origin: bottom center; }
+.bar-col.hi { background: var(--ochre); }
+.bar-col.up { background: var(--riso-blue); }
+.bar-labels { display: flex; gap: 26px; margin-top: 18px; }
+.bar-labels span { flex: 1; text-align: center; font-family: "JetBrains Mono", monospace; font-size: 23px; color: var(--ink-soft); letter-spacing: .06em; }
+
+/* ---- tiles: ô số liệu như phiếu cắt rời ---- */
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 42px; }
+.tile { background: var(--stock-2); padding: 34px 30px; box-shadow: 0 3px 0 rgba(48,40,28,.16), 0 10px 18px rgba(48,40,28,.16); clip-path: polygon(0 3px, 99% 0, 100% calc(100% - 4px), 1% 100%); }
+.tile-value { font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 64px; color: var(--riso-blue); line-height: 1; }
+.tile-label { font-size: 29px; color: var(--ink); margin-top: 14px; }
+.tile-note { font-family: "JetBrains Mono", monospace; font-size: 21px; color: var(--ink-soft); margin-top: 8px; }
+.foot-note { font-family: "JetBrains Mono", monospace; font-size: 21px; color: var(--ink-soft); margin-top: 30px; }
+
+/* ---- quote ---- */
+.quote-mark { font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 150px; color: var(--ochre); line-height: .7; }
+.quote-text { font-size: 62px; line-height: 1.28; font-weight: 500; margin-top: 14px; }
+.quote-by { font-family: "JetBrains Mono", monospace; font-size: 25px; letter-spacing: .14em; text-transform: uppercase; color: var(--riso-blue); margin-top: 36px; }
+
+/* ---- keys: từ khoá như nhãn dán xếp chồng ---- */
+.keys { display: flex; flex-direction: column; align-items: flex-start; gap: 22px; margin-top: 40px; }
+.key {
+  font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 58px; line-height: 1;
+  background: var(--ink); color: var(--stock); padding: 18px 30px;
+  box-shadow: 0 4px 0 rgba(20,18,14,.5), 0 10px 18px rgba(48,40,28,.24);
+}
+.key.long { font-size: 44px; }
+.key:nth-child(even) { background: var(--riso-blue); }
+
+/* ---- image: ảnh dán như polaroid, có mép giấy trắng ---- */
+.photo { background: #fbf8f1; padding: 22px 22px 26px; box-shadow: 0 3px 0 var(--stock-2), 0 20px 34px rgba(48,40,28,.3); }
+.photo-frame { overflow: hidden; aspect-ratio: 16/9; }
+.photo-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-frame.contain { background: var(--stock-2); }
+.photo-frame.contain img { object-fit: contain; }
+.photo-tag {
+  display: inline-block; margin-top: 20px; background: var(--ochre); color: #2b2213;
+  font-family: "JetBrains Mono", monospace; font-size: 21px; letter-spacing: .16em;
+  text-transform: uppercase; padding: 8px 18px;
+}
+
+/* ---- caption: dải giấy rách ở đáy ---- */
+.caprail-bg {
+  position: absolute; left: 0; right: 0; bottom: 96px; height: 268px;
+  background: var(--stock);
+  clip-path: polygon(0 14px, 22% 4px, 55% 12px, 81% 2px, 100% 10px, 100% 100%, 0 100%);
+  box-shadow: 0 -10px 24px rgba(48,40,28,.24);
+}
+.caprail { position: absolute; left: 70px; right: 70px; bottom: 130px; text-align: center; }
+.cap { font-size: 44px; line-height: 1.34; font-weight: 600; color: var(--ink); }
+
+/* ---- thanh tiến độ: một sợi chỉ hoàng thổ ở mép dưới ---- */
+.track { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; background: rgba(60,50,34,.22); }
+.fill { height: 100%; background: var(--ochre); transform-origin: left center; }
+.colophon {
+  position: absolute; left: var(--pad); bottom: 34px;
+  font-family: "JetBrains Mono", monospace; font-size: 20px; letter-spacing: .24em;
+  text-transform: uppercase; color: rgba(33,31,28,.42);
+}

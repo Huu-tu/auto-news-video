@@ -22,3 +22,6 @@ videos/
 # ── Linh tinh ────────────────────────────────────────────────────────────────
 *.log
 .DS_Store
+
+# Playwright MCP scratch
+.playwright-mcp/
