@@ -23,6 +23,22 @@ const KINDS = {
 /**
  * @returns {{ ok: boolean, errors: string[] }}
  */
+/** Vài kind sai đoán trước được -> ánh xạ về kind thật. Không im lặng: trả về
+ *  danh sách đã đổi để ghi log. */
+const KIND_ALIAS = { outro: "divider", ending: "divider", section: "divider", point: "story", fact: "stat" };
+
+export function normalizeKinds(cards) {
+  const changed = [];
+  if (!Array.isArray(cards)) return { cards, changed };
+  for (const c of cards) {
+    if (c && typeof c === "object" && KIND_ALIAS[c.kind]) {
+      changed.push(`${c.kind} -> ${KIND_ALIAS[c.kind]}`);
+      c.kind = KIND_ALIAS[c.kind];
+    }
+  }
+  return { cards, changed };
+}
+
 export function validateChapters(cards, lineCount) {
   const errors = [];
   if (!Array.isArray(cards)) return { ok: false, errors: ["output không phải mảng"] };
@@ -92,7 +108,10 @@ export function fallbackChapters(rows, brand) {
 }
 
 // ── Prompt gửi Claude Code ──────────────────────────────────────────────────
-function buildPrompt({ rows, brand, images }) {
+function buildPrompt({ rows, brand, images, errors = [] }) {
+  const correction = errors.length
+    ? `\n\nLẦN TRƯỚC BẠN TRẢ SAI, sửa đúng những điểm này:\n${errors.slice(0, 8).map((e) => `- ${e}`).join("\n")}\n`
+    : "";
   const script = rows.map((r, i) => `${i}: ${r.text}`).join("\n");
   const imgList = images.length
     ? images.map((im) => `- id "${im.id}" → dùng "img": "${im.relPath}"`).join("\n")
@@ -104,7 +123,9 @@ function buildPrompt({ rows, brand, images }) {
 
 Mỗi phần tử là một cảnh, có:
 - "line": số thứ tự DÒNG kịch bản mà cảnh bắt đầu (xem danh sách dưới), phải TĂNG DẦN.
-  Cảnh đầu tiên dùng "intro", cảnh cuối cùng dùng "outro".
+  Riêng cảnh ĐẦU dùng "line": "intro", cảnh CUỐI dùng "line": "outro".
+  CHÚ Ý: "outro" chỉ là giá trị của "line", KHÔNG có kind nào tên "outro".
+  Thẻ kết thúc dùng "kind": "divider" với head kiểu "CẢM ƠN QUÝ VỊ ĐÃ THEO DÕI".
 - "kind" và các field bắt buộc tương ứng:
   intro    → kicker, head, sub
   divider  → head                       (thẻ ngăn, vd "NHỮNG TIN CHÍNH")
@@ -131,7 +152,7 @@ Thương hiệu: ${brand.name || "BẢN TIN"} · ${brand.sub || ""} — ngày ${
 ${imgList}
 
 Kịch bản (index: nội dung):
-${script}`;
+${script}${correction}`;
 }
 
 // ── Gọi Claude Code ─────────────────────────────────────────────────────────
@@ -197,20 +218,23 @@ export async function planChapters({ rows, brand, images, bin = "claude", fallba
     return { cards: fallbackChapters(rows, brand), source: "fallback", attempts: 0, errors: [] };
   }
 
-  const prompt = buildPrompt({ rows, brand, images });
   const allErrors = [];
+  let lastErrors = [];
 
   for (let attempt = 1; attempt <= retries + 1; attempt++) {
     try {
       onLog(`gọi claude (lần ${attempt}/${retries + 1})`);
-      const raw = await runClaude(prompt, { bin });
-      const cards = extractJsonArray(raw);
+      const raw = await runClaude(buildPrompt({ rows, brand, images, errors: lastErrors }), { bin });
+      const parsed = extractJsonArray(raw);
+      const { cards, changed } = normalizeKinds(parsed);
+      if (changed.length) onLog(`chuẩn hoá kind: ${changed.join(", ")}`);
       const { ok, errors } = validateChapters(cards, rows.length);
       if (ok) {
         onLog(`✓ nhận ${cards.length} cảnh từ LLM`);
         return { cards, source: "llm", attempts: attempt, errors: [] };
       }
       onLog(`✗ schema sai: ${errors.slice(0, 5).join("; ")}`);
+      lastErrors = errors;
       allErrors.push(...errors);
     } catch (e) {
       onLog(`✗ lỗi gọi claude: ${e.message}`);

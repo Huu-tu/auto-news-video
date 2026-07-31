@@ -125,11 +125,13 @@ body {
 /* ---- KÝ HIỆU: chữ khoét thủng, lộ bìa kraft phía dưới ---- */
 .cutout {
   font-family: "Montserrat", sans-serif; font-weight: 900;
-  color: #a89c86;
+  /* Màu này là ĐÁY vết cắt, không phải mặt bìa: lỗ xuyên qua giấy lộ ra vùng
+     trong bóng nên phải tối hơn hẳn. Dùng màu sáng ngang tấm bìa thì vừa sai
+     vật lý vừa trượt WCAG (1.86:1 trên giấy kem). */
+  color: #574d3d;
   text-shadow:
-    0 2px 0 var(--board-deep),
-    0 6px 10px rgba(28,22,12,.55),
-    0 1px 0 rgba(0,0,0,.35);
+    0 2px 0 rgba(255,252,244,.5),
+    0 -1px 2px rgba(20,14,6,.5);
   letter-spacing: -.015em; line-height: .97;
 }
 
@@ -162,7 +164,8 @@ body {
 
 /* ---- stat ---- */
 .stat-value { font-family: "Montserrat", sans-serif; font-weight: 900; font-size: 210px; line-height: .9; color: var(--riso-blue); letter-spacing: -.03em; }
-.stat-unit { font-family: "JetBrains Mono", monospace; font-size: 34px; letter-spacing: .18em; text-transform: uppercase; color: var(--ochre); margin-top: 14px; }
+/* hoàng thổ nguyên bản chỉ đạt 1.67:1 trên giấy kem — dùng bản đậm cho chữ */
+.stat-unit { font-family: "JetBrains Mono", monospace; font-size: 34px; letter-spacing: .18em; text-transform: uppercase; color: #8a5f14; margin-top: 14px; }
 .stat-label { margin-top: 34px; font-size: 36px; line-height: 1.4; color: var(--ink-soft); }
 
 /* ---- chart: cột giấy cắt ---- */
@@ -230,5 +233,5 @@ body {
 .colophon {
   position: absolute; left: var(--pad); bottom: 34px;
   font-family: "JetBrains Mono", monospace; font-size: 20px; letter-spacing: .24em;
-  text-transform: uppercase; color: rgba(33,31,28,.42);
+  text-transform: uppercase; color: #332f2a; /* WCAG 4.5:1 trên nền kraft — .42 alpha chỉ đạt 2:1 */
 }
