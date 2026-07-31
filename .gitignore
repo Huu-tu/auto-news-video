@@ -1,0 +1,34 @@
+# ── Bí mật ───────────────────────────────────────────────────────────────────
+.env
+.env.local
+bantin/.env
+
+# ── Dependency ───────────────────────────────────────────────────────────────
+node_modules/
+__pycache__/
+.venv/
+venv/
+
+# ── Baseline regression test của HyperFrames (upstream) ─────────────────────
+# Thư mục output/ chứa toàn bộ đầu ra sinh tự động của bộ regression test:
+# 82 file .mp4 (~509 MB) cộng .mov và compiled.html cỡ 2-4 MB mỗi file. Đây là
+# golden baseline của HeyGen để so sánh render, KHÔNG dùng trong quy trình dựng
+# bản tin. Repo gốc quản lý chúng bằng Git LFS (.gitattributes), bản tải về này
+# không có file đó — commit thẳng sẽ nhét nửa GB nhị phân vào history và không
+# gỡ ra được. Chạy lại test upstream sẽ tự sinh lại.
+packages/producer/tests/**/output/
+packages/**/dist/
+packages/**/.turbo/
+
+# ── Sản phẩm của job ─────────────────────────────────────────────────────────
+# Mỗi job ~18 MB cho 83 giây video. Input, log, MP4 đều nằm trong đây.
+bantin/work/*
+!bantin/work/.gitkeep
+
+# ── Thư mục brief gửi tay (khi chạy /bantin thay vì qua API) ─────────────────
+prompts /
+videos/
+
+# ── Linh tinh ────────────────────────────────────────────────────────────────
+*.log
+.DS_Store

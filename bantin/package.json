@@ -1,0 +1,20 @@
+{
+  "name": "bantin-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "API + worker + UI dựng video bản tin tiếng Việt dọc 9:16 từ storyboard + giọng đọc",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "dev": "node --watch src/server.mjs",
+    "drive:auth": "node scripts/drive-auth.mjs",
+    "doctor": "node scripts/doctor.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14"
+  }
+}

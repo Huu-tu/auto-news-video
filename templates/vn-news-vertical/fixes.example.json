@@ -1,0 +1,6 @@
+{
+  "_comment": "Optional. Copy to your project as fixes.json. Sửa lỗi nhận dạng ASR: {'chữ sai':'chữ đúng'}. build.mjs thay thế nguyên văn (case-sensitive). Bỏ trống thì caption giữ 100% verbatim.",
+  "Izan": "Iran",
+  "đọc giả": "độc giả",
+  "chương mộ": "chiêu mộ"
+}
