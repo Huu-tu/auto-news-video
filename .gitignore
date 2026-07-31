@@ -1,0 +1,24 @@
+# ── Bí mật ───────────────────────────────────────────────────────────────────
+.env
+.env.local
+
+# ── Dependency ───────────────────────────────────────────────────────────────
+node_modules/
+__pycache__/
+.venv/
+venv/
+
+# ── Sản phẩm của job ─────────────────────────────────────────────────────────
+# Mỗi job ~18 MB cho 83 giây video: input client gửi lên, transcript, log, MP4.
+work/*
+!work/.gitkeep
+
+# ── Brief gửi tay ────────────────────────────────────────────────────────────
+# Chỉ dùng khi chạy /bantin thủ công; luồng chính nhận input qua API.
+# Tên thư mục có dấu cách ở cuối — không phải lỗi đánh máy.
+prompts /
+videos/
+
+# ── Linh tinh ────────────────────────────────────────────────────────────────
+*.log
+.DS_Store

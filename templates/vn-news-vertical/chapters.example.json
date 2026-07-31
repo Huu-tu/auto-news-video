@@ -1,0 +1,38 @@
+[
+  { "start": 0,     "kind": "intro",    "kicker": "ĐIỂM TIN NHANH", "head": "BẢN TIN", "sub": "Chiều ngày 18 tháng 7" },
+  { "start": 7.9,   "kind": "divider",  "head": "NHỮNG TIN CHÍNH" },
+
+  { "start": 9.12,  "kind": "headline", "idx": "01", "cat": "THẾ GIỚI",  "head": "Tiêu đề tin số 1", "sub": "Dòng phụ đề ngắn cho tin 1" },
+  { "start": 13.06, "kind": "headline", "idx": "02", "cat": "TRONG NƯỚC", "head": "Tiêu đề tin số 2", "sub": "Dòng phụ đề ngắn cho tin 2" },
+  { "start": 17.9,  "kind": "headline", "idx": "03", "cat": "THỂ THAO",  "head": "Tiêu đề tin số 3", "sub": "Dòng phụ đề ngắn cho tin 3" },
+
+  { "start": 21.54, "kind": "story", "cat": "ĐỊA ĐIỂM · KHU VỰC", "head": "Tiêu đề đầy đủ của tin 1", "sub": "Câu tóm tắt chi tiết cho tin 1" },
+
+  { "start": 60.0, "kind": "stat", "cat": "NHÃN DANH MỤC", "value": "6.255", "unit": "ĐƠN VỊ", "label": "Câu giải thích ngắn cho con số này" },
+
+  { "start": 90.0, "kind": "chart", "cat": "NHÃN DANH MỤC", "head": "Tiêu đề biểu đồ", "sub": "Dòng chú thích ngắn",
+    "bars": [
+      { "label": "2024", "value": "~31.900 tỷ", "pct": 100 },
+      { "label": "2025", "value": "14.030 tỷ", "pct": 44, "hi": true }
+    ] },
+
+  { "start": 110.0, "kind": "image", "img": "prompts/image/anh-1.jpg", "cat": "NHÃN DANH MỤC", "head": "Tiêu đề đi kèm ảnh", "tag": "TỪ KHÓA NHẤN" },
+
+  { "start": 125.0, "kind": "image", "img": "prompts/image/do-thi.png", "fit": "contain", "ratio": 2.09,
+    "cat": "NHÃN DANH MỤC", "head": "Ảnh đồ họa — không cắt xén, không Ken Burns" },
+
+  { "start": 140.0, "kind": "keys", "cat": "NHÃN DANH MỤC", "keys": ["Từ khóa 1", "Từ khóa 2", "Từ khóa 3"], "sub": "Dòng giải thích ngắn" },
+
+  { "start": 150.0, "kind": "quote", "head": "Câu trích dẫn ngắn gọn, đắt giá của nhân vật", "sub": "TÊN NHÂN VẬT · CHỨC DANH" },
+
+  { "start": 160.0, "kind": "tiles", "cat": "NHÃN DANH MỤC", "head": "Tiêu đề bảng số liệu",
+    "tiles": [
+      { "value": "+8,18%", "label": "Tên chỉ tiêu", "note": "ghi chú so sánh" },
+      { "value": "111.693", "label": "Tên chỉ tiêu", "note": "ghi chú so sánh" }
+    ],
+    "foot": "Số liệu: Nguồn · ngày công bố" },
+
+  { "start": 170.0, "kind": "story", "cat": "ĐỊA ĐIỂM · KHU VỰC", "head": "Tiêu đề đầy đủ của tin 2", "sub": "Câu tóm tắt chi tiết cho tin 2" },
+
+  { "start": 573.6, "kind": "divider", "head": "CẢM ƠN QUÝ VỊ ĐÃ THEO DÕI" }
+]

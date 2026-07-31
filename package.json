@@ -1,0 +1,24 @@
+{
+  "name": "auto-news-video",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "API + worker + UI dựng video bản tin tiếng Việt dọc 9:16 từ storyboard + giọng đọc",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "dev": "node --env-file-if-exists=.env --watch src/server.mjs",
+    "drive:auth": "node --env-file-if-exists=.env scripts/drive-auth.mjs",
+    "doctor": "node --env-file-if-exists=.env scripts/doctor.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Huu-tu/auto-news-video"
+  }
+}
