@@ -65,6 +65,13 @@ test("updateRow sửa được nội dung", { skip }, async () => {
   assert.equal(u.note, "ghi chú");
 });
 
+test("updateRow ánh xạ runAt (camelCase) sang cột run_at", { skip }, async () => {
+  const r = await seed();
+  const newRunAt = new Date(Date.now() + 9999_000);
+  const u = await updateRow(sql, r.id, { runAt: newRunAt });
+  assert.equal(u.run_at.getTime(), newRunAt.getTime());
+});
+
 test("setEnabled bật tắt được mà không đụng status", { skip }, async () => {
   const r = await seed();
   const off = await setEnabled(sql, r.id, false);
@@ -107,12 +114,33 @@ test("claimDue nhặt dòng cũ nhất trước", { skip }, async () => {
   assert.equal(got.id, old.id);
 });
 
+test("claimDue: hai client tranh nhau chỉ một bên nhặt được", { skip }, async () => {
+  await seed({ runAt: soon() });
+  const a = postgres(URL, { onnotice: () => {} });
+  const b = postgres(URL, { onnotice: () => {} });
+  try {
+    const [ra, rb] = await Promise.all([claimDue(a), claimDue(b)]);
+    assert.equal([ra, rb].filter(Boolean).length, 1, "đúng một client được nhặt");
+  } finally {
+    await a.end({ timeout: 5 });
+    await b.end({ timeout: 5 });
+  }
+});
+
 test("markRow cập nhật trạng thái và lỗi", { skip }, async () => {
   const r = await seed();
   const m = await markRow(sql, r.id, { status: "failed", last_error: "align_failed", attempts: 1 });
   assert.equal(m.status, "failed");
   assert.equal(m.last_error, "align_failed");
   assert.equal(m.attempts, 1);
+});
+
+test("markRow ném lỗi khi patch có key lạ", { skip }, async () => {
+  const r = await seed();
+  await assert.rejects(
+    () => markRow(sql, r.id, { videoLink: "https://example.com/v.mp4" }),
+    /cột không hợp lệ/,
+  );
 });
 
 test("rowsInFlight trả về dòng đang bay", { skip }, async () => {
