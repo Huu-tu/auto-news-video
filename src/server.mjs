@@ -85,11 +85,57 @@ async function pump() {
   const kids = new Set();
   children.set(jobId, kids);
 
+  // Trần thời gian cho cả job: ffmpeg, transcribe.py, align_script.py,
+  // hyperframes render và fetch upload Drive đều không có gì tự chặn. Một
+  // tiến trình con không thoát sẽ làm await runJob() treo vĩnh viễn, running
+  // không được giải phóng, và hàng đợi đứng im — đặc biệt nguy hiểm khi chạy
+  // theo lịch lúc 3h sáng không có ai bấm Huỷ.
+  const timeoutMs = Number(process.env.JOB_TIMEOUT_MS || 7_200_000);
+  let timedOut = false;
+  let timer = null;
+
   try {
-    await runJob(jobId, { registerChild: (c) => kids.add(c) });
+    const job = runJob(jobId, { registerChild: (c) => kids.add(c) });
+    const guard = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        // Dùng lại đúng cơ chế của nút Huỷ: giết tiến trình con để runJob
+        // thoát ra, rồi ghi đè trạng thái bằng mã "timeout".
+        for (const child of kids) {
+          try { child.kill("SIGTERM"); } catch { /* có thể đã chết */ }
+        }
+        setTimeout(() => {
+          for (const child of kids) {
+            try { child.kill("SIGKILL"); } catch { /* đã chết */ }
+          }
+        }, 10_000);
+        reject(new Error("timeout"));
+      }, timeoutMs);
+    });
+
+    await Promise.race([job, guard]);
+
+    if (timedOut) await job.catch(() => {}); // để runJob dọn xong đã
   } catch (e) {
-    console.error(`[job ${jobId}]`, e);
+    if (!timedOut) console.error(`[job ${jobId}]`, e);
   } finally {
+    if (timer) clearTimeout(timer);
+
+    if (timedOut) {
+      // Ghi SAU khi runJob settle, nếu không nó sẽ đè lại bằng render_failed.
+      patchStatus(jobId, {
+        status: "failed",
+        stage: { name: "failed", progress: null, detail: null },
+        error: {
+          code: "timeout",
+          stage: "unknown",
+          message: `Job vượt trần ${Math.round(timeoutMs / 60000)} phút — đã dừng để giải phóng hàng đợi`,
+          retryable: false,
+        },
+      });
+      log(jobId, `FAILED [timeout] quá ${Math.round(timeoutMs / 60000)} phút`);
+    }
+
     children.delete(jobId);
     running = null;
     setImmediate(pump);
