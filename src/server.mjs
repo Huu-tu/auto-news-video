@@ -90,7 +90,13 @@ async function pump() {
   // tiến trình con không thoát sẽ làm await runJob() treo vĩnh viễn, running
   // không được giải phóng, và hàng đợi đứng im — đặc biệt nguy hiểm khi chạy
   // theo lịch lúc 3h sáng không có ai bấm Huỷ.
-  const timeoutMs = Number(process.env.JOB_TIMEOUT_MS || 7_200_000);
+  // Number("120m") hay Number("2h") đều ra NaN — setTimeout(fn, NaN) bị Node
+  // ép về 1ms, giết MỌI job gần như ngay lập tức với mã "timeout" (không
+  // retryable). .env.example mô tả biến này bằng phút nên rất dễ viết nhầm
+  // đơn vị; chốt lại bằng Number.isFinite thay vì import numEnv() từ
+  // scheduler.mjs để khỏi tạo phụ thuộc chéo không cần thiết.
+  const rawTimeout = Number(process.env.JOB_TIMEOUT_MS);
+  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 7_200_000;
   const job = runJob(jobId, { registerChild: (c) => kids.add(c) });
 
   let timer = null;
@@ -123,17 +129,28 @@ async function pump() {
       clearTimeout(killTimer); // child chết sạch rồi thì đừng giữ timer 10s treo
 
       try {
-        patchStatus(jobId, {
-          status: "failed",
-          stage: { name: "failed", progress: null, detail: null },
-          error: {
-            code: "timeout",
-            stage: "unknown",
-            message: `Job vượt trần ${Math.round(timeoutMs / 60000)} phút — đã dừng để giải phóng hàng đợi`,
-            retryable: false,
-          },
-        });
-        log(jobId, `FAILED [timeout] quá ${Math.round(timeoutMs / 60000)} phút`);
+        // await job.catch() ở trên đã chờ runJob chạy hết — nếu nó kịp
+        // upload Drive và ghi "done" trước khi bị SIGTERM cắt ngang (job hoàn
+        // tất ở phút 119:59 chẳng hạn), đọc lại trạng thái ở đây để không ghi
+        // đè thành công thành thất bại: video đã lên Drive, file local đã bị
+        // pipeline dọn, ghi "failed" lúc này chỉ xoá mất link mà không cứu
+        // được gì.
+        const cur = readStatus(jobId);
+        if (cur && ["done", "cancelled"].includes(cur.status)) {
+          log(jobId, `bỏ qua ghi timeout: job đã ${cur.status}`);
+        } else {
+          patchStatus(jobId, {
+            status: "failed",
+            stage: { name: "failed", progress: null, detail: null },
+            error: {
+              code: "timeout",
+              stage: "unknown",
+              message: `Job vượt trần ${Math.round(timeoutMs / 60000)} phút — đã dừng để giải phóng hàng đợi`,
+              retryable: false,
+            },
+          });
+          log(jobId, `FAILED [timeout] quá ${Math.round(timeoutMs / 60000)} phút`);
+        }
       } catch (e) {
         console.error(`[job ${jobId}] không ghi được trạng thái timeout:`, e);
       }
@@ -234,14 +251,21 @@ app.get("/health", (c) => {
   // curl) thường so một field kiểu số/chuỗi thời gian với "now" bằng phép trừ
   // — so với một object sẽ luôn ra NaN và không bao giờ báo động dù tick chết.
   const { startedAt, succeededAt } = lastTick();
-  return c.json({
-    ok: true,
+  // succeededAt null nghĩa là server vừa khởi động, chưa tick lần nào — đó
+  // KHÔNG phải tick chết, nên không được coi là stale (okAt !== null lo việc
+  // này). Bộ hẹn giờ chết thật sự (tick không còn chạy) mới trả 503 — HEALTHCHECK
+  // trong Dockerfile dùng curl -fsS nên -f sẽ fail đúng lúc cần báo động.
+  const okAt = succeededAt ? Date.parse(succeededAt) : null;
+  const tickStale = okAt !== null && Date.now() - okAt > 600_000;
+  const body = {
+    ok: !tickStale,
     running,
     queued: queue.length,
     last_tick_started_at: startedAt,
     last_tick_ok_at: succeededAt,
     now: new Date().toISOString(),
-  });
+  };
+  return c.json(body, tickStale ? 503 : 200);
 });
 
 // ── UI ───────────────────────────────────────────────────────────────────────
@@ -389,20 +413,25 @@ app.get("/v1/jobs/:id/logs", (c) => {
   return c.json({ logs: readLogs(id, Math.min(Number(c.req.query("limit") || 500), 5000)) });
 });
 
-app.post("/v1/jobs/:id/cancel", (c) => {
-  const id = c.req.param("id");
-  const s = readStatus(id);
-  if (!s) return c.json({ error: { code: "not_found" } }, 404);
-  if (isTerminal(s.status)) return c.json({ error: { code: "already_terminal", message: s.status } }, 409);
+/**
+ * Huỷ một job đang bay: rút khỏi hàng đợi nếu chưa chạy, hoặc SIGTERM các
+ * tiến trình con nếu đang chạy. Tách riêng để route xoá lịch (POST
+ * /schedule/:id/delete) dùng lại đúng logic này thay vì viết lại kiểu khác —
+ * hai chỗ khác nhau về cách huỷ (rẽ nhánh sai queue/running) là đúng loại lỗi
+ * dễ để video vẫn render và lên Drive sau khi dòng lịch đã bị xoá.
+ */
+function cancelJob(jobId) {
+  const s = readStatus(jobId);
+  if (!s || isTerminal(s.status)) return;
 
-  patchStatus(id, { cancel_requested: true });
-  const i = queue.indexOf(id);
+  patchStatus(jobId, { cancel_requested: true });
+  const i = queue.indexOf(jobId);
   if (i >= 0) {
     queue.splice(i, 1);
-    patchStatus(id, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
+    patchStatus(jobId, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
     refreshQueuePositions();
   } else {
-    for (const child of children.get(id) || []) {
+    for (const child of children.get(jobId) || []) {
       try {
         child.kill("SIGTERM");
       } catch {
@@ -410,6 +439,15 @@ app.post("/v1/jobs/:id/cancel", (c) => {
       }
     }
   }
+}
+
+app.post("/v1/jobs/:id/cancel", (c) => {
+  const id = c.req.param("id");
+  const s = readStatus(id);
+  if (!s) return c.json({ error: { code: "not_found" } }, 404);
+  if (isTerminal(s.status)) return c.json({ error: { code: "already_terminal", message: s.status } }, 409);
+
+  cancelJob(id);
   return c.json(readStatus(id));
 });
 
@@ -545,10 +583,12 @@ app.post("/schedule", async (c) => {
   // Tên file ảnh do client đặt — parseBody không lọc đường dẫn. basename() bỏ
   // mọi thư mục cha (chặn "../../../src/pipeline.mjs" ghi đè ra ngoài work/),
   // rồi lọc còn ký tự an toàn. Giữ nguyên phần trước dấu chấm: storyboard tham
-  // chiếu ảnh theo đúng id đó (image_1.png → id image_1), regex \w đã bao gồm
-  // "_" nên tên hợp lệ không bị đổi.
+  // chiếu ảnh theo đúng id đó (image_1.png → id image_1). \w chỉ khớp
+  // [A-Za-z0-9_] nên "ảnh1.png" bị băm thành "_nh1.png" — không khớp id trong
+  // storyboard, ảnh biến mất khỏi video mà không báo gì. Dùng \p{L}\p{N} để
+  // giữ chữ Unicode (có dấu), chỉ loại ký tự thật sự nguy hiểm cho đường dẫn.
   const safeImages = images
-    .map((f) => ({ ...f, safeName: basename(f.file.name).replace(/[^\w.-]/g, "_") }))
+    .map((f) => ({ ...f, safeName: basename(f.file.name).replace(/[^\p{L}\p{N}._-]/gu, "_") }))
     .filter((f) => f.safeName && !f.safeName.startsWith("."));
 
   let total = audio.file.size || 0;
@@ -656,6 +696,16 @@ app.post("/schedule/:id/edit", async (c) => {
   // copy file + storyboard sang thư mục riêng của job từ trước, nên sửa ở đây
   // không ảnh hưởng job đang chạy — chỉ có tác dụng cho lần chạy kế tiếp.
   await updateRow(sql, id, { name, runAt, storyboard, note });
+
+  // Sửa giờ hẹn của một dòng đã kết thúc (lỗi, bỏ lỡ, xong) là ý định chạy
+  // lại — updateRow không đụng status, và claimDue chỉ nhặt status='pending',
+  // nên nếu không đặt lại ở đây, form nhận, giờ hiển thị đổi, nhưng dòng đứng
+  // vĩnh viễn ở trạng thái cũ và không bao giờ được nhặt lại, không báo gì.
+  const cur = await getRow(sql, id);
+  if (cur && ["failed", "missed", "done"].includes(cur.status)) {
+    await markRow(sql, id, { status: "pending", attempts: 0, job_id: null, last_error: null });
+  }
+
   return c.redirect("/schedule", 303);
 });
 
@@ -691,6 +741,13 @@ app.post("/schedule/:id/delete", async (c) => {
   if (id === null) return c.redirect("/schedule", 303);
   const row = await getRow(sql, id);
   if (row) {
+    // Job đang bay không tự biết dòng lịch của nó vừa bị xoá — nó vẫn render
+    // 45-70 phút rồi upload lên Drive với tên theo dòng đã xoá, và không cơ
+    // chế nào chạm được nó nữa nếu ta không huỷ trước. Dùng đúng logic của
+    // route huỷ job (cancelJob) chứ không viết lại rẽ nhánh queue/running.
+    if (row.job_id && ["queued", "running", "claimed"].includes(row.status)) {
+      cancelJob(row.job_id);
+    }
     // Xoá dòng DB và thư mục file trong cùng một thao tác — đây chính là
     // lý do gộp hai nút thành một: hai nguồn sự thật không được lệch nhau.
     // Dùng row.id (giá trị đã qua DB) cho scheduleDir, không dùng id thô từ

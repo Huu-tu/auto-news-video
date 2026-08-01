@@ -78,6 +78,11 @@ async function alert(jobId, error) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ job_id: jobId, error }),
+      // Không timeout thì fetch có thể treo vô hạn nếu host nhận TCP nhưng
+      // không trả lời — runJob() await hàm này trong catch, server.mjs lại
+      // await job.catch(() => {}) sau khi timeout nổ, nên một webhook treo
+      // là cả hàng đợi đóng băng vĩnh viễn. Khớp bản trong scheduler.mjs.
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     /* chuông báo cháy hỏng thì cũng không được làm job hỏng theo */
