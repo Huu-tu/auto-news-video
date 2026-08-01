@@ -14,3 +14,7 @@ venv/
 
 # Playwright MCP scratch
 .playwright-mcp/
+
+# Artifact quy trình (brainstorm/plan/report của skill superpowers) — dùng để
+# làm việc, không phải một phần của sản phẩm, không nên lọt vào lịch sử commit.
+.superpowers/

@@ -32,14 +32,18 @@ npm start                 # UI: http://localhost:8080/?token=<API_TOKEN>
 ## Cấu trúc
 
 ```
-src/server.mjs      API + UI + hàng đợi FIFO
-src/pipeline.mjs    orchestration 10 bước (transcribe → Drive)
-src/storyboard.mjs  parse bảng markdown → script.txt + bản đồ ảnh
-src/adscan.mjs      dò quảng cáo TTS chèn trong giọng đọc
-src/plan.mjs        gọi Claude Code + validate schema + fallback
-src/drive.mjs       OAuth refresh token + resumable upload
-src/store.mjs       job store trên hệ thống file (không database)
-src/ui.mjs          trang quản lý, HTML server-render, không build step
+src/server.mjs        API + UI + hàng đợi FIFO
+src/pipeline.mjs      orchestration 10 bước (transcribe → Drive)
+src/storyboard.mjs    parse bảng markdown → script.txt + bản đồ ảnh
+src/adscan.mjs        dò quảng cáo TTS chèn trong giọng đọc
+src/plan.mjs          gọi Claude Code + validate schema + fallback
+src/drive.mjs         OAuth refresh token + resumable upload
+src/store.mjs         job store trên hệ thống file (không database)
+src/ui.mjs            trang quản lý, HTML server-render, không build step
+src/db.mjs            kết nối PostgreSQL cho bảng lịch + tạo schema (CREATE TABLE IF NOT EXISTS)
+src/schedule.mjs      CRUD bảng lịch + nhặt dòng đến hạn nguyên tử (FOR UPDATE SKIP LOCKED)
+src/scheduler.mjs     vòng tick: chạy/chờ/bỏ lỡ một dòng lịch, đối soát dòng đang bay với job.status
+src/schedule-validate.mjs   kiểm tra storyboard/ảnh/thời lượng audio trước khi lưu một dòng lịch
 templates/vn-news-vertical/   design system + generator — xem README riêng trong đó
 work/<job_id>/      input, log, artifact của từng job
 ```
@@ -48,8 +52,11 @@ work/<job_id>/      input, log, artifact của từng job
 
 - **Không thêm framework cho UI.** Trang quản lý là HTML render phía server; thêm React
   hay bundler vào chỉ để hiện một danh sách là không đáng.
-- **Dependency tối thiểu.** Hiện chỉ có `hono` + `@hono/node-server`. Google Drive dùng
-  `fetch` trần chứ không kéo `googleapis`.
+- **Dependency tối thiểu.** Hiện có ba: `hono` + `@hono/node-server`, và `postgres`
+  (porsager) cho bảng lịch. Google Drive dùng `fetch` trần chứ không kéo `googleapis`.
+  Chọn `postgres` vì nó 0 dependency con và dùng tagged template (`` sql`...` ``) tự
+  tham số hoá câu lệnh — không cần thêm lớp ORM hay ORM query-builder chỉ để chống
+  SQL injection cho một bảng duy nhất.
 - **Composition phải qua `npx hyperframes lint` và `check` sạch lỗi** trước khi render.
 - **Render tất định**: không `Date.now()`, không `Math.random()` chưa gieo hạt, không
   fetch mạng lúc render.
@@ -67,3 +74,7 @@ work/<job_id>/      input, log, artifact của từng job
   account: file do nó tạo thuộc về nó, mà nó có hạn mức lưu trữ = 0 → `storageQuotaExceeded`.
 - **LEAD/TAIL** (2.6s / 2.4s) phải khớp giữa `align_script.py` và lệnh `ffmpeg` pad audio.
   Lệch là caption trôi khỏi giọng đọc.
+- **Bộ hẹn giờ cần `TZ=Asia/Ho_Chi_Minh`.** VPS mặc định chạy UTC — thiếu biến này, dòng
+  lịch hẹn 09:00 sẽ đợi tới 16:00 giờ Việt Nam mới chạy, và video ra lệch 7 tiếng so với
+  ý người đặt lịch. Dockerfile đã set sẵn `ENV TZ`; chạy ngoài Docker thì tự khai trong
+  `.env`.
