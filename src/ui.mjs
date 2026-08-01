@@ -1,6 +1,8 @@
 // Trang quản lý — HTML render phía server, không build step, không framework.
 // Trang này chỉ có một danh sách, một form và một thanh tiến độ; thêm bundler
 // vào Docker image chỉ để làm ngần ấy việc là không đáng.
+import { html, raw } from "hono/html";
+
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
 
@@ -18,6 +20,19 @@ const STATUS_LABEL = {
   failed: "lỗi",
   cancelled: "đã huỷ",
 };
+
+const SCHEDULE_LABEL = {
+  pending: "🕐 Chờ đến giờ",
+  claimed: "⏱ Đang nhận",
+  queued: "📋 Trong hàng đợi",
+  running: "⏳ Đang chạy",
+  done: "✅ Xong",
+  failed: "❌ Lỗi",
+  missed: "⚠️ Bỏ lỡ",
+};
+
+const fmtDate = (d) => new Date(d).toLocaleDateString("vi-VN");
+const fmtTime = (d) => new Date(d).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 
 const CSS = `
 :root{--bg:#0e1116;--panel:#161b22;--line:#242c37;--fg:#e6edf3;--dim:#8b98a5;--red:#d21422;--green:#2ea043;--amber:#d29922}
@@ -65,6 +80,18 @@ input[type=text],input[type=file],textarea{width:100%;background:#0b0e13;border:
 textarea{min-height:120px;font-family:ui-monospace,monospace}
 .row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
 @media(max-width:720px){.row{grid-template-columns:1fr}.tpl{flex-direction:column}}
+nav{display:flex;gap:18px;padding:0 24px 12px;border-bottom:1px solid var(--line)}
+nav a{color:var(--dim);text-decoration:none;font-size:14px;padding:6px 0}
+nav a.on{color:var(--fg);box-shadow:inset 0 -2px 0 var(--red)}
+form.inline{display:inline}
+.sw{background:none;border:0;cursor:pointer;font-size:15px;padding:2px 6px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;color:var(--dim);margin-bottom:5px}
+.field input,.field textarea{width:100%;background:#0e1116;border:1px solid var(--line);
+  border-radius:6px;color:var(--fg);padding:8px 10px;font:inherit}
+.field textarea{min-height:150px;font-family:ui-monospace,monospace;font-size:13px}
+.row2{display:flex;gap:14px}.row2>*{flex:1}
+.err{background:#3a1416;border:1px solid var(--red);border-radius:8px;padding:14px;margin-bottom:18px}
 `;
 
 function statusClass(s) {
@@ -110,6 +137,85 @@ function templateCard(t) {
     </div>
     <a class="btn primary" href="#" onclick="document.getElementById('new').showModal();return false">Tạo video</a>
   </div>`;
+}
+
+/**
+ * Khung trang dùng chung cho các trang mới. Dùng `html` của hono thay cho nối
+ * chuỗi: nội suy được escape mặc định, muốn chèn HTML thô phải nói rõ raw().
+ * dashboard() giữ nguyên cách cũ — chuyển dần, không đập đi làm lại.
+ */
+function page(inner) {
+  return html`<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bản tin Studio</title><style>${raw(CSS)}</style>
+</head><body>
+<header><span class="pill">BẢN TIN</span><h1>Studio</h1></header>
+${inner}
+</body></html>`;
+}
+
+function nav(active) {
+  const item = (href, label) =>
+    html`<a href="${href}" class="${href === active ? "on" : ""}">${label}</a>`;
+  return html`<nav>${item("/", "Video")}${item("/schedule", "Lịch")}</nav>`;
+}
+
+function scheduleRow(r) {
+  let detail = "";
+  if (r.status === "done" && r.video_link) {
+    detail = html` · <a href="${r.video_link}" target="_blank" rel="noopener">mở video</a>`;
+  } else if (r.last_error) {
+    detail = html` · <span class="warn">${String(r.last_error).slice(0, 90)}</span>`;
+  }
+
+  // Bố cục fallback nghĩa là bước LLM không chạy — video vẫn ra nhưng nghèo hẳn.
+  // Ở chế độ tự động không ai xem lại từng video, nên phải hiện ra ở đây.
+  const plan = r.plan_source === "fallback" ? html` <span class="warn">fallback</span>` : "";
+
+  const post = (path, label, title) => html`
+    <form class="inline" method="post" action="/schedule/${r.id}/${path}">
+      <button class="btn" title="${title}">${label}</button></form>`;
+
+  return html`<tr>
+    <td class="mono">${r.id}</td>
+    <td>${fmtDate(r.run_at)}</td>
+    <td>${fmtTime(r.run_at)}</td>
+    <td>${r.name}</td>
+    <td><form class="inline" method="post" action="/schedule/${r.id}/toggle">
+          <button class="sw" title="${r.enabled ? "Đang bật — bấm để tắt" : "Đang tắt — bấm để bật"}">
+            ${r.enabled ? "🟢" : "⚪"}</button></form></td>
+    <td>${SCHEDULE_LABEL[r.status] || r.status}${detail}${plan}</td>
+    <td style="text-align:right;white-space:nowrap">
+      ${post("run", "Chạy ngay", "Bỏ qua giờ hẹn, đẩy vào hàng đợi luôn")}
+      ${post("delete", "Xoá", "Xoá cả dòng lịch lẫn file đã upload")}
+    </td>
+  </tr>`;
+}
+
+function addDialog() {
+  return html`<dialog id="add">
+    <form method="post" action="/schedule" enctype="multipart/form-data">
+      <div class="head"><strong>Thêm lịch</strong>
+        <button type="button" class="btn" style="margin-left:auto"
+                onclick="document.getElementById('add').close()">Đóng</button></div>
+      <div class="body">
+        <div class="field"><label>Tên</label><input name="name" required placeholder="Tin tức vàng" /></div>
+        <div class="row2">
+          <div class="field"><label>Ngày</label><input type="date" name="date" required /></div>
+          <div class="field"><label>Giờ</label><input type="time" name="time" required value="09:00" /></div>
+        </div>
+        <div class="field"><label>Storyboard (dán bảng markdown)</label>
+          <textarea name="storyboard" required placeholder="| # | Thời điểm | Lời thoại | ..."></textarea></div>
+        <div class="field"><label>File ghi âm</label>
+          <input type="file" name="audio" accept="audio/*" required /></div>
+        <div class="field"><label>Hình ảnh (đặt tên file trùng id trong storyboard, vd image_1.png)</label>
+          <input type="file" name="images" accept="image/*" multiple /></div>
+        <div class="field"><label>Ghi chú</label><input name="note" /></div>
+        <div class="field"><label><input type="checkbox" name="enabled" checked /> Bật ngay</label></div>
+        <button class="btn primary" type="submit">Lưu lịch</button>
+      </div>
+    </form>
+  </dialog>`;
 }
 
 export const renderPage = {
@@ -227,5 +333,56 @@ for (const tr of document.querySelectorAll('tr.s-active')) {
 }
 </script>
 </body></html>`;
+  },
+
+  schedule({ rows }) {
+    const body = rows.length === 0
+      ? html`<div class="empty">Chưa có lịch nào. Bấm “+ Thêm lịch” để tạo.</div>`
+      : html`<table>
+          <thead><tr>
+            <th>ID</th><th>Ngày</th><th>Giờ</th><th>Tên</th>
+            <th>Chạy?</th><th>Trạng thái</th><th></th>
+          </tr></thead>
+          <tbody>${rows.map(scheduleRow)}</tbody>
+         </table>`;
+
+    return page(html`
+      ${nav("/schedule")}
+      <main>
+        <h2>Lịch tạo video
+          <button class="btn primary" style="float:right"
+                  onclick="document.getElementById('add').showModal()">+ Thêm lịch</button>
+        </h2>
+        ${body}
+        ${addDialog()}
+      </main>`);
+  },
+
+  scheduleError(message) {
+    return page(html`
+      ${nav("/schedule")}
+      <main>
+        <div class="err"><strong>Không lưu được</strong><br />${message}</div>
+        <a class="btn" href="/schedule">← Quay lại</a>
+      </main>`);
+  },
+
+  /** Đã lưu nhưng có cảnh báo — hiện ra để người dùng quyết định, không tự chặn. */
+  scheduleSaved({ row, check, audioDurationSec }) {
+    return page(html`
+      ${nav("/schedule")}
+      <main>
+        <h2>Đã lưu lịch #${row.id} — nhưng có cảnh báo</h2>
+        <div class="err">
+          <ul>${check.warnings.map((w) => html`<li>${w}</li>`)}</ul>
+        </div>
+        <div class="card mono">
+          ${check.lineCount} dòng lời thoại ·
+          ${check.referencedImages.length} ảnh được tham chiếu ·
+          file ghi âm ${Math.round(audioDurationSec)}s
+        </div>
+        <p>Lịch đã được lưu. Sửa lại hoặc xoá nếu thấy sai.</p>
+        <a class="btn primary" href="/schedule">← Về danh sách</a>
+      </main>`);
   },
 };
