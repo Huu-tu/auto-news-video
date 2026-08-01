@@ -34,8 +34,27 @@ for (const [cmd, label] of [["ffmpeg", "ffmpeg"], ["ffprobe", "ffprobe"], ["pyth
   v ? ok(`${label}: ${v.slice(0, 60)}`) : bad(`${label} không có trên PATH`);
 }
 
-const claude = await has(process.env.CLAUDE_BIN || "claude");
-claude ? ok(`claude: ${claude}`) : warn("claude không có — pipeline sẽ luôn dùng bố cục fallback");
+// `claude --version` chạy được KỂ CẢ khi chưa xác thực — nên nó không chứng
+// minh được gì. Phải gọi thật một lần mới biết.
+const claudeBin = process.env.CLAUDE_BIN || "claude";
+const claudeVer = await has(claudeBin);
+if (!claudeVer) {
+  warn(`${claudeBin} không có trên PATH — pipeline sẽ luôn dùng bố cục fallback`);
+} else {
+  try {
+    // execFile (và promisify của nó) không có option `input` — đó là của
+    // execFileSync/spawnSync. Bản async phải tự ghi vào stdin của child. Node
+    // gắn ChildProcess vào promise đã promisify hoá qua thuộc tính `.child`.
+    const call = pexec(claudeBin, ["-p", "--output-format", "json"], { timeout: 60000 });
+    call.child.stdin.write("Trả lời đúng một mảng JSON: [1,2,3]");
+    call.child.stdin.end();
+    const { stdout } = await call;
+    JSON.parse(stdout);
+    ok(`claude: ${claudeVer} — xác thực OK`);
+  } catch {
+    bad(`claude: ${claudeVer} nhưng GỌI THẬT THẤT BẠI — kiểm tra ANTHROPIC_API_KEY. Mọi video sẽ dùng bố cục fallback.`);
+  }
+}
 
 console.log("\nPython:");
 try {
@@ -57,6 +76,26 @@ if (missing.length === 0) {
 } else {
   warn(`Drive chưa cấu hình (thiếu ${missing.join(", ")}) — video chỉ nằm trên VPS`);
 }
+
+if (process.env.DATABASE_URL) {
+  try {
+    const { getSql, initSchema, closeSql } = await import("../src/db.mjs");
+    await initSchema(getSql());
+    await closeSql();
+    ok("PostgreSQL kết nối được, bảng schedule sẵn sàng");
+  } catch (e) {
+    bad(`PostgreSQL lỗi: ${e.message}`);
+  }
+} else {
+  bad("DATABASE_URL trống — bảng lịch sẽ không chạy");
+}
+
+// Múi giờ sai là bẫy kinh điển: VPS mặc định UTC, hẹn 09:00 thì video ra lúc 16:00.
+const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const nowLocal = new Date().toLocaleString("vi-VN");
+tz === "Asia/Ho_Chi_Minh"
+  ? ok(`múi giờ ${tz} — bây giờ là ${nowLocal}`)
+  : warn(`múi giờ ${tz} (không phải Asia/Ho_Chi_Minh) — bây giờ là ${nowLocal}. Kiểm tra kỹ trước khi tin vào giờ hẹn.`);
 
 console.log("\nTài nguyên:");
 const cpus = (await import("node:os")).cpus().length;
