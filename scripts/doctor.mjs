@@ -42,10 +42,20 @@ if (!claudeVer) {
   warn(`${claudeBin} không có trên PATH — pipeline sẽ luôn dùng bố cục fallback`);
 } else {
   try {
+    // Phải nối CLAUDE_EXTRA_ARGS giống hệt src/plan.mjs: một số VPS vẫn hiện
+    // prompt xin quyền dù bước này chỉ sinh văn bản, và cờ đó nằm ở đây để
+    // khỏi treo. Doctor không đọc biến này thì sẽ treo hết 60s rồi báo nhầm
+    // là lỗi ANTHROPIC_API_KEY, trong khi vấn đề thật là thiếu cờ.
+    const extra = (process.env.CLAUDE_EXTRA_ARGS || "").split(/\s+/).filter(Boolean);
+    // --model haiku: prompt chỉ cần trả về [1,2,3] để chứng minh đã xác thực,
+    // không cần model đắt tiền. Doctor bị chạy nhiều lần lúc dựng máy — ghim
+    // model rẻ để không ai ngại chạy nó.
     // execFile (và promisify của nó) không có option `input` — đó là của
     // execFileSync/spawnSync. Bản async phải tự ghi vào stdin của child. Node
     // gắn ChildProcess vào promise đã promisify hoá qua thuộc tính `.child`.
-    const call = pexec(claudeBin, ["-p", "--output-format", "json"], { timeout: 60000 });
+    const call = pexec(claudeBin, ["-p", "--output-format", "json", "--model", "haiku", ...extra], {
+      timeout: 60000,
+    });
     call.child.stdin.write("Trả lời đúng một mảng JSON: [1,2,3]");
     call.child.stdin.end();
     const { stdout } = await call;

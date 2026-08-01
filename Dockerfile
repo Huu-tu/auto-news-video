@@ -3,7 +3,12 @@ FROM node:22-bookworm-slim
 
 # Chrome headless cần bộ thư viện hệ thống này; ffmpeg để cắt/pad audio;
 # python3 cho faster-whisper. fonts-* để render tiếng Việt không bị ô vuông.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# DEBIAN_FRONTEND=noninteractive chỉ áp cho lệnh RUN này (không set bằng ENV,
+# đỡ rò vào runtime container). Dùng `export` chứ không phải prefix `VAR=val cmd`
+# vì prefix chỉ áp cho lệnh đứng ngay sau nó — apt-get install nằm sau `&&` sẽ
+# không thấy biến này nếu chỉ prefix. tzdata chạy debconf hỏi Area/Zone lúc
+# cài — không có tty thì build treo.
+RUN export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg python3 python3-pip ca-certificates curl tzdata \
       fonts-liberation fonts-noto-core fonts-noto-color-emoji \
       libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 \
