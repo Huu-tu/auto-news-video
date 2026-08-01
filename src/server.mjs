@@ -2,7 +2,7 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, normalize } from "node:path";
+import { basename, join, normalize } from "node:path";
 import { Readable } from "node:stream";
 
 import { listTemplates, runJob } from "./pipeline.mjs";
@@ -21,6 +21,7 @@ import {
   readStatus,
   reapInterrupted,
   saveIdempotency,
+  scheduleDir,
   writeStatus,
 } from "./store.mjs";
 import { getSql, initSchema } from "./db.mjs";
@@ -28,7 +29,6 @@ import { validateScheduleInput } from "./schedule-validate.mjs";
 import { brandFromParams, parseStoryboard } from "./storyboard.mjs";
 import { createRow, deleteRow, getRow, listRows, markRow, setEnabled } from "./schedule.mjs";
 import { lastTick, startScheduler } from "./scheduler.mjs";
-import { scheduleDir } from "./store.mjs";
 import { probeDuration } from "./adscan.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
@@ -50,7 +50,10 @@ try {
   sql = getSql();
   await initSchema(sql);
 } catch (e) {
-  console.error(`Không kết nối được PostgreSQL: ${e.message}. Bảng lịch cần DATABASE_URL — xem .env.example.`);
+  // e.message của getSql() khi thiếu biến môi trường đã tự nhắc DATABASE_URL —
+  // đừng lặp lại câu đó, chỉ nối hậu tố khi thông điệp gốc chưa nhắc tới.
+  const hint = e.message.includes("DATABASE_URL") ? "" : " Bảng lịch cần DATABASE_URL — xem .env.example.";
+  console.error(`Không kết nối được PostgreSQL: ${e.message}.${hint}`);
   process.exit(1);
 }
 
@@ -107,7 +110,13 @@ async function createJobFromSchedule(row) {
   mkdirSync(join(inputDir, "images"), { recursive: true });
 
   const src = join(scheduleDir(row.id), "input");
-  if (!existsSync(src)) throw new Error(`Không thấy dữ liệu của lịch #${row.id} tại ${src}`);
+  // Kiểm tra CÓ FILE GIỌNG ĐỌC THẬT, không chỉ thư mục tồn tại: bước ghi file
+  // lúc lưu lịch tự tạo sẵn thư mục images/ rỗng trước khi ghi audio (xem
+  // mkdirSync bên dưới trong POST /schedule) — nếu ghi audio hỏng giữa chừng,
+  // existsSync(src) vẫn true vì thư mục rỗng đã có, và cpSync sẽ copy một thư
+  // mục rỗng thay vì báo lỗi ở đây.
+  const hasAudio = existsSync(src) && readdirSync(src).some((f) => /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f));
+  if (!hasAudio) throw new Error(`Lịch #${row.id} không có file giọng đọc trong ${src}`);
   cpSync(src, inputDir, { recursive: true });
 
   writeFileSync(join(inputDir, "storyboard.md"), row.storyboard);
@@ -166,9 +175,20 @@ app.use("*", async (c, next) => {
   return next();
 });
 
-app.get("/health", (c) =>
-  c.json({ ok: true, running, queued: queue.length, last_tick: lastTick(), now: new Date().toISOString() }),
-);
+app.get("/health", (c) => {
+  // Phơi phẳng hai mốc thay vì trả object: giám sát ngoài (uptime-kuma, cron +
+  // curl) thường so một field kiểu số/chuỗi thời gian với "now" bằng phép trừ
+  // — so với một object sẽ luôn ra NaN và không bao giờ báo động dù tick chết.
+  const { startedAt, succeededAt } = lastTick();
+  return c.json({
+    ok: true,
+    running,
+    queued: queue.length,
+    last_tick_started_at: startedAt,
+    last_tick_ok_at: succeededAt,
+    now: new Date().toISOString(),
+  });
+});
 
 // ── UI ───────────────────────────────────────────────────────────────────────
 app.get("/", (c) => {
@@ -445,8 +465,11 @@ app.post("/schedule", async (c) => {
     return c.html(renderPage.scheduleError("Thiếu tên, ngày hoặc giờ"), 400);
   }
 
-  // Giờ nhập là giờ địa phương của server (TZ=Asia/Ho_Chi_Minh).
-  const runAt = new Date(`${date}T${time}:00`);
+  // Giờ nhập là giờ địa phương của server (TZ=Asia/Ho_Chi_Minh). Input type="time"
+  // của trình duyệt gửi "HH:MM", nhưng chấp nhận luôn "HH:MM:SS" cho chắc — thiếu
+  // giây không được ép thẳng thành "...T07:30:15:00" (Invalid Date).
+  const timeNorm = /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
+  const runAt = new Date(`${date}T${timeNorm}`);
   if (Number.isNaN(runAt.getTime())) {
     return c.html(renderPage.scheduleError("Ngày giờ không hợp lệ"), 400);
   }
@@ -460,9 +483,32 @@ app.post("/schedule", async (c) => {
   }
   const audio = files.find((f) => f.field === "audio");
   if (!audio) return c.html(renderPage.scheduleError("Thiếu file ghi âm"), 400);
+  if ((audio.file.size || 0) > MAX_AUDIO) {
+    return c.html(renderPage.scheduleError("File ghi âm > 50 MB"), 413);
+  }
 
   const images = files.filter((f) => f.field === "images" && f.file.name);
-  const imageIds = images.map((f) => f.file.name.replace(/\.[a-z0-9]+$/i, ""));
+  // Tên file ảnh do client đặt — parseBody không lọc đường dẫn. basename() bỏ
+  // mọi thư mục cha (chặn "../../../src/pipeline.mjs" ghi đè ra ngoài work/),
+  // rồi lọc còn ký tự an toàn. Giữ nguyên phần trước dấu chấm: storyboard tham
+  // chiếu ảnh theo đúng id đó (image_1.png → id image_1), regex \w đã bao gồm
+  // "_" nên tên hợp lệ không bị đổi.
+  const safeImages = images
+    .map((f) => ({ ...f, safeName: basename(f.file.name).replace(/[^\w.-]/g, "_") }))
+    .filter((f) => f.safeName && !f.safeName.startsWith("."));
+
+  let total = audio.file.size || 0;
+  for (const im of safeImages) {
+    if ((im.file.size || 0) > MAX_IMAGE) {
+      return c.html(renderPage.scheduleError(`Ảnh ${im.safeName} > 10 MB`), 413);
+    }
+    total += im.file.size || 0;
+  }
+  if (total > MAX_TOTAL) {
+    return c.html(renderPage.scheduleError(`Tổng ${Math.round(total / 1048576)} MB > 100 MB`), 413);
+  }
+
+  const imageIds = safeImages.map((f) => f.safeName.replace(/\.[a-z0-9]+$/i, ""));
 
   // Vòng 1 — chỉ storyboard. Chặn sớm để không tạo dòng rác trong DB.
   const early = validateScheduleInput({ storyboardText: storyboard, imageIds, audioDurationSec: 0 });
@@ -471,13 +517,23 @@ app.post("/schedule", async (c) => {
   const row = await createRow(sql, { name, runAt, storyboard, note, enabled });
 
   const inputDir = join(scheduleDir(row.id), "input");
-  mkdirSync(join(inputDir, "images"), { recursive: true });
   const write = async (f, dest) => writeFileSync(dest, Buffer.from(await f.arrayBuffer()));
 
   const ext = (audio.file.name || "vo.mp3").match(/\.[a-z0-9]+$/i)?.[0] || ".mp3";
   const audioPath = join(inputDir, `vo${ext}`);
-  await write(audio.file, audioPath);
-  for (const im of images) await write(im.file, join(inputDir, "images", im.file.name));
+
+  // Đĩa đầy hay tên file lạ giữa chừng không được để lại dòng DB mồ côi trỏ
+  // vào thư mục rỗng/dở — hỏng thì xoá luôn dòng vừa tạo và dọn thư mục, coi
+  // như request này chưa từng xảy ra.
+  try {
+    mkdirSync(join(inputDir, "images"), { recursive: true });
+    await write(audio.file, audioPath);
+    for (const im of safeImages) await write(im.file, join(inputDir, "images", im.safeName));
+  } catch (e) {
+    await deleteRow(sql, row.id);
+    rmSync(scheduleDir(row.id), { recursive: true, force: true });
+    return c.html(renderPage.scheduleError(`Ghi file thất bại: ${e.message}`), 500);
+  }
 
   // Vòng 2 — giờ mới đo được thời lượng audio. Đây là kiểm tra đáng giá nhất:
   // audio không khớp storyboard sẽ ra align_failed sau ~25 phút chạy thật.
@@ -495,15 +551,43 @@ app.post("/schedule", async (c) => {
   return c.redirect("/schedule", 303);
 });
 
+/**
+ * Ép id trong URL về số nguyên dương tường minh, KHÔNG dựa vào việc PostgreSQL
+ * tự chối chuỗi lạ khi ép sang bigint. Cột id là bigint nhưng PostgreSQL vẫn
+ * chấp nhận " 12", "+12", "012" ép về 12 — trong khi scheduleDir(" 12") lại
+ * trỏ ra một thư mục khác (work/schedule/ 12). Chặn ở đây trước khi id chạm
+ * tới cả getRow lẫn scheduleDir, để hai nguồn sự thật (DB, thư mục file)
+ * không bao giờ lệch nhau vì khác cách hiểu cùng một id.
+ */
+function parseScheduleId(c) {
+  const id = Number(c.req.param("id"));
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 app.post("/schedule/:id/toggle", async (c) => {
-  const row = await getRow(sql, c.req.param("id"));
+  const id = parseScheduleId(c);
+  if (id === null) return c.redirect("/schedule", 303);
+  const row = await getRow(sql, id);
   if (row) await setEnabled(sql, row.id, !row.enabled);
   return c.redirect("/schedule", 303);
 });
 
 app.post("/schedule/:id/run", async (c) => {
-  const row = await getRow(sql, c.req.param("id"));
+  const id = parseScheduleId(c);
+  if (id === null) return c.redirect("/schedule", 303);
+  const row = await getRow(sql, id);
   if (!row) return c.redirect("/schedule", 303);
+
+  // Dòng đang bay (claimed/queued/running) đã có job của chính nó đang chạy
+  // hoặc chờ chạy. Tạo thêm job thứ hai ở đây rồi markRow ghi đè job_id sẽ
+  // làm job đầu "mồ côi": nó vẫn render 45-70 phút và vẫn upload Drive, nhưng
+  // không dòng lịch nào còn trỏ tới để đối soát chạm lại — đúng kiểu song
+  // sinh mà FOR UPDATE SKIP LOCKED trong claimDue được dựng lên để chặn, chỉ
+  // là đường "Chạy ngay" đi vòng qua nó vì không claim gì cả.
+  if (!["pending", "failed", "missed", "done"].includes(row.status)) {
+    return c.redirect("/schedule", 303);
+  }
+
   try {
     const jobId = await createJobFromSchedule(row);
     await markRow(sql, row.id, { status: "queued", job_id: jobId, last_error: null });
@@ -514,13 +598,16 @@ app.post("/schedule/:id/run", async (c) => {
 });
 
 app.post("/schedule/:id/delete", async (c) => {
-  const id = c.req.param("id");
+  const id = parseScheduleId(c);
+  if (id === null) return c.redirect("/schedule", 303);
   const row = await getRow(sql, id);
   if (row) {
     // Xoá dòng DB và thư mục file trong cùng một thao tác — đây chính là
     // lý do gộp hai nút thành một: hai nguồn sự thật không được lệch nhau.
-    await deleteRow(sql, id);
-    rmSync(scheduleDir(id), { recursive: true, force: true });
+    // Dùng row.id (giá trị đã qua DB) cho scheduleDir, không dùng id thô từ
+    // URL — dù ở đây hai giá trị luôn khớp vì parseScheduleId đã ép Number.
+    await deleteRow(sql, row.id);
+    rmSync(scheduleDir(row.id), { recursive: true, force: true });
   }
   return c.redirect("/schedule", 303);
 });
