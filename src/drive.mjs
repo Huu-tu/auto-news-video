@@ -31,6 +31,7 @@ export async function getAccessToken(env = process.env) {
       refresh_token: env.GOOGLE_REFRESH_TOKEN,
       grant_type: "refresh_token",
     }),
+    signal: AbortSignal.timeout(30_000),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -75,6 +76,7 @@ export async function uploadToDrive(filePath, { folderId, filename, env = proces
       "X-Upload-Content-Length": String(size),
     },
     body: JSON.stringify({ name, mimeType: "video/mp4", ...(folderId ? { parents: [folderId] } : {}) }),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!initRes.ok) {
     throw new Error(`Khởi tạo upload thất bại (${initRes.status}): ${(await initRes.text()).slice(0, 300)}`);
@@ -99,6 +101,7 @@ export async function uploadToDrive(filePath, { folderId, filename, env = proces
             "content-range": `bytes ${offset}-${end}/${size}`,
           },
           body: buf,
+          signal: AbortSignal.timeout(120_000), // 8 MB qua đường truyền chậm vẫn kịp
         });
         break;
       } catch (e) {

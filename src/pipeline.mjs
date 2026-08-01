@@ -3,7 +3,7 @@
 // Mọi bước là script tất định, TRỪ bước `planning` gọi Claude Code — và bước đó
 // có schema gác đầu ra + fallback, nên LLM hỏng cũng không giết job.
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -82,6 +82,40 @@ async function alert(jobId, error) {
   } catch {
     /* chuông báo cháy hỏng thì cũng không được làm job hỏng theo */
   }
+}
+
+/**
+ * Video đã an toàn trên Drive thì các file nặng trong thư mục job không còn
+ * giá trị. Giữ lại status.json, logs.ndjson, transcript.json, chapters.json
+ * (vài trăm KB) để còn tra cứu.
+ *
+ * CHỈ gọi khi upload Drive THÀNH CÔNG — nếu không thì đây là bản sao duy nhất.
+ */
+export function cleanupAfterUpload(dir, onLog = () => {}) {
+  const targets = [
+    "output.mp4", "vo.mp3", "vo16k.wav", "vo-cut.mp3", "vo-final.mp3",
+    "project", "input",
+  ];
+
+  let freed = 0;
+  for (const name of targets) {
+    const p = join(dir, name);
+    if (!existsSync(p)) continue;
+    try {
+      freed += dirSize(p);
+      rmSync(p, { recursive: true, force: true });
+    } catch (e) {
+      onLog(`không xoá được ${name}: ${e.message}`);
+    }
+  }
+  onLog(`dọn ${(freed / 1048576).toFixed(0)} MB (video đã an toàn trên Drive)`);
+  return freed;
+}
+
+function dirSize(p) {
+  const st = statSync(p);
+  if (!st.isDirectory()) return st.size;
+  return readdirSync(p).reduce((n, f) => n + dirSize(join(p, f)), 0);
 }
 
 export async function runJob(jobId, { registerChild } = {}) {
@@ -319,6 +353,7 @@ export async function runJob(jobId, { registerChild } = {}) {
       });
       drive = { folder_id: folderId || null, file_id: file.id, filename: file.name, link: file.webViewLink };
       log(jobId, `Drive: ${file.webViewLink}`);
+      cleanupAfterUpload(dir, (m) => log(jobId, m));
     } else {
       addWarning(jobId, "drive_not_configured", "Chưa cấu hình Google Drive — video chỉ nằm trên VPS");
       log(jobId, "bỏ qua upload: thiếu credential Drive");
@@ -334,7 +369,8 @@ export async function runJob(jobId, { registerChild } = {}) {
       plan_source: plan.source,
       drive,
       artifacts: {
-        video_url: `/v1/jobs/${jobId}/video`,
+        // File local đã bị dọn sau khi upload — trỏ thẳng sang Drive.
+        video_url: drive.link || `/v1/jobs/${jobId}/video`,
         duration_sec: transcript.duration,
         transcript_url: `/v1/jobs/${jobId}/files/transcript.json`,
         chapters_url: `/v1/jobs/${jobId}/files/chapters.json`,
