@@ -131,7 +131,7 @@ function jobRow(j) {
     <td>${j.warnings?.length ? `<span class="warn" title="${esc(j.warnings.map((w) => w.message).join(" · "))}">${j.warnings.length} cảnh báo</span>` : ""}
         ${j.plan_source === "fallback" ? '<span class="warn">fallback</span>' : ""}</td>
     <td style="text-align:right;white-space:nowrap">
-      ${j.status === "done" ? `<a class="btn" href="#" onclick="preview('${esc(j.job_id)}');return false">▶ xem</a>` : ""}
+      ${j.status === "done" && !j.drive?.link ? `<a class="btn" href="#" onclick="preview('${esc(j.job_id)}');return false">▶ xem</a>` : ""}
       ${j.drive?.link ? `<a class="btn" href="${esc(j.drive.link)}" target="_blank" rel="noopener">Drive</a>` : ""}
       ${j.status === "failed" ? `<a class="btn" href="#" onclick="showLogs('${esc(j.job_id)}');return false">log</a>` : ""}
       ${active ? `<a class="btn" href="#" onclick="cancelJob('${esc(j.job_id)}');return false">huỷ</a>` : ""}

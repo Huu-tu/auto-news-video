@@ -4,14 +4,14 @@
 // có schema gác đầu ra + fallback, nên LLM hỏng cũng không giết job.
 import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { scanForAds } from "./adscan.mjs";
 import { planChapters } from "./plan.mjs";
 import { driveConfigured, uploadToDrive } from "./drive.mjs";
 import { imageIdFromRef, parseStoryboard, toScriptText } from "./storyboard.mjs";
-import { addWarning, jobDir, log, patchStatus, readStatus, setStage } from "./store.mjs";
+import { WORK_DIR, addWarning, jobDir, log, patchStatus, readStatus, setStage } from "./store.mjs";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 
@@ -92,6 +92,14 @@ async function alert(jobId, error) {
  * CHỈ gọi khi upload Drive THÀNH CÔNG — nếu không thì đây là bản sao duy nhất.
  */
 export function cleanupAfterUpload(dir, onLog = () => {}) {
+  // Hàm này xoá đệ quy. Không tin caller: nếu dir không nằm dưới WORK_DIR thì
+  // dừng ngay. Rẻ hơn nhiều so với việc khôi phục một thư mục bị xoá nhầm.
+  const abs = resolve(dir || "");
+  if (!abs.startsWith(resolve(WORK_DIR) + sep)) {
+    onLog(`từ chối dọn "${dir}" — nằm ngoài WORK_DIR`);
+    return 0;
+  }
+
   const targets = [
     "output.mp4", "vo.mp3", "vo16k.wav", "vo-cut.mp3", "vo-final.mp3",
     "project", "input",
