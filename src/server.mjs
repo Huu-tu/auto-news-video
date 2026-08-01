@@ -1,7 +1,7 @@
 // API + UI. Một tiến trình, một cổng.
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, normalize } from "node:path";
 import { Readable } from "node:stream";
 
@@ -23,6 +23,13 @@ import {
   saveIdempotency,
   writeStatus,
 } from "./store.mjs";
+import { getSql, initSchema } from "./db.mjs";
+import { validateScheduleInput } from "./schedule-validate.mjs";
+import { brandFromParams, parseStoryboard } from "./storyboard.mjs";
+import { createRow, deleteRow, getRow, listRows, markRow, setEnabled } from "./schedule.mjs";
+import { lastTick, startScheduler } from "./scheduler.mjs";
+import { scheduleDir } from "./store.mjs";
+import { probeDuration } from "./adscan.mjs";
 
 const PORT = Number(process.env.PORT || 8080);
 const API_TOKEN = process.env.API_TOKEN || "";
@@ -33,6 +40,19 @@ const MAX_TOTAL = 100 * 1024 * 1024;
 initStore();
 const reaped = reapInterrupted();
 if (reaped) console.log(`[store] đánh dấu failed cho ${reaped} job bị cắt ngang`);
+
+// ── Bảng lịch ────────────────────────────────────────────────────────────────
+// PostgreSQL giờ là bắt buộc cho tính năng lịch. Thiếu DATABASE_URL hay không
+// kết nối được thì thoát rõ ràng bằng tiếng Việt — không để lộ stack trace,
+// và không âm thầm chạy tiếp thiếu tính năng (không có chế độ không-database).
+let sql;
+try {
+  sql = getSql();
+  await initSchema(sql);
+} catch (e) {
+  console.error(`Không kết nối được PostgreSQL: ${e.message}. Bảng lịch cần DATABASE_URL — xem .env.example.`);
+  process.exit(1);
+}
 
 // ── Hàng đợi: FIFO, concurrency 1 ────────────────────────────────────────────
 // Render đã ăn hết CPU; chạy hai job song song chỉ làm cả hai cùng chậm.
@@ -73,6 +93,54 @@ async function pump() {
   }
 }
 
+/**
+ * Dựng một job từ dòng lịch: copy file người dùng đã upload sang thư mục job,
+ * ghi storyboard từ DB ra file, rồi đẩy vào đúng hàng đợi mà API vẫn dùng.
+ *
+ * COPY chứ không move: thư mục lịch là nguồn để chạy lại, dọn dẹp job không
+ * được làm mất nó.
+ */
+async function createJobFromSchedule(row) {
+  const jobId = newJobId();
+  const dir = jobDir(jobId);
+  const inputDir = join(dir, "input");
+  mkdirSync(join(inputDir, "images"), { recursive: true });
+
+  const src = join(scheduleDir(row.id), "input");
+  if (!existsSync(src)) throw new Error(`Không thấy dữ liệu của lịch #${row.id} tại ${src}`);
+  cpSync(src, inputDir, { recursive: true });
+
+  writeFileSync(join(inputDir, "storyboard.md"), row.storyboard);
+
+  const { params } = parseStoryboard(row.storyboard);
+  const brand = brandFromParams(params);
+
+  writeStatus(jobId, {
+    job_id: jobId,
+    status: "queued",
+    stage: { name: "queued", progress: 0, detail: null },
+    template: "vn-news-vertical",
+    brand,
+    options: {},
+    drive: { filename: `${row.name.replace(/[^\p{L}\p{N}]+/gu, "-")}-{date}-{job_id}.mp4` },
+    metadata: { schedule_id: row.id, schedule_name: row.name },
+    queue_position: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    started_at: null,
+    timings_sec: {},
+    warnings: [],
+    artifacts: {},
+    error: null,
+  });
+
+  log(jobId, `job tạo từ lịch #${row.id} "${row.name}"`);
+  enqueue(jobId);
+  return jobId;
+}
+
+startScheduler({ sql, enqueueJob: createJobFromSchedule, log: (m) => console.log(`[scheduler] ${m}`) });
+
 // ── App ──────────────────────────────────────────────────────────────────────
 const app = new Hono();
 
@@ -98,7 +166,9 @@ app.use("*", async (c, next) => {
   return next();
 });
 
-app.get("/health", (c) => c.json({ ok: true, running, queued: queue.length }));
+app.get("/health", (c) =>
+  c.json({ ok: true, running, queued: queue.length, last_tick: lastTick(), now: new Date().toISOString() }),
+);
 
 // ── UI ───────────────────────────────────────────────────────────────────────
 app.get("/", (c) => {
@@ -345,6 +415,114 @@ app.get("/v1/jobs/:id/project/*", (c) => {
     svg: "image/svg+xml",
   };
   return sendFile(c, p, types[ext] || "application/octet-stream");
+});
+
+// ── Lịch tạo video ───────────────────────────────────────────────────────────
+app.get("/schedule", async (c) => {
+  // plan_source nằm trong status.json của job, không có trong bảng schedule.
+  // Ghép vào đây để bảng lịch hiện được cảnh báo "fallback" — dấu hiệu bước
+  // LLM không chạy, mà job vẫn báo done.
+  const rows = (await listRows(sql)).map((r) => ({
+    ...r,
+    plan_source: r.job_id ? readStatus(r.job_id)?.plan_source || null : null,
+  }));
+  return c.html(renderPage.schedule({ rows }));
+});
+
+app.get("/v1/schedule", async (c) => c.json({ rows: await listRows(sql) }));
+
+app.post("/schedule", async (c) => {
+  const body = await c.req.parseBody({ all: true });
+
+  const name = String(body.name || "").trim();
+  const date = String(body.date || "").trim();
+  const time = String(body.time || "").trim();
+  const storyboard = String(body.storyboard || "");
+  const note = String(body.note || "");
+  const enabled = body.enabled === "on";
+
+  if (!name || !date || !time) {
+    return c.html(renderPage.scheduleError("Thiếu tên, ngày hoặc giờ"), 400);
+  }
+
+  // Giờ nhập là giờ địa phương của server (TZ=Asia/Ho_Chi_Minh).
+  const runAt = new Date(`${date}T${time}:00`);
+  if (Number.isNaN(runAt.getTime())) {
+    return c.html(renderPage.scheduleError("Ngày giờ không hợp lệ"), 400);
+  }
+
+  const files = [];
+  for (const [k, v] of Object.entries(body)) {
+    for (const f of Array.isArray(v) ? v : [v]) {
+      if (typeof f === "string" || !f || typeof f.arrayBuffer !== "function") continue;
+      files.push({ field: k, file: f });
+    }
+  }
+  const audio = files.find((f) => f.field === "audio");
+  if (!audio) return c.html(renderPage.scheduleError("Thiếu file ghi âm"), 400);
+
+  const images = files.filter((f) => f.field === "images" && f.file.name);
+  const imageIds = images.map((f) => f.file.name.replace(/\.[a-z0-9]+$/i, ""));
+
+  // Vòng 1 — chỉ storyboard. Chặn sớm để không tạo dòng rác trong DB.
+  const early = validateScheduleInput({ storyboardText: storyboard, imageIds, audioDurationSec: 0 });
+  if (!early.ok) return c.html(renderPage.scheduleError(early.errors.join(" · ")), 400);
+
+  const row = await createRow(sql, { name, runAt, storyboard, note, enabled });
+
+  const inputDir = join(scheduleDir(row.id), "input");
+  mkdirSync(join(inputDir, "images"), { recursive: true });
+  const write = async (f, dest) => writeFileSync(dest, Buffer.from(await f.arrayBuffer()));
+
+  const ext = (audio.file.name || "vo.mp3").match(/\.[a-z0-9]+$/i)?.[0] || ".mp3";
+  const audioPath = join(inputDir, `vo${ext}`);
+  await write(audio.file, audioPath);
+  for (const im of images) await write(im.file, join(inputDir, "images", im.file.name));
+
+  // Vòng 2 — giờ mới đo được thời lượng audio. Đây là kiểm tra đáng giá nhất:
+  // audio không khớp storyboard sẽ ra align_failed sau ~25 phút chạy thật.
+  let audioDurationSec = 0;
+  try {
+    audioDurationSec = await probeDuration(audioPath);
+  } catch {
+    /* thiếu ffprobe thì bỏ qua kiểm tra này, không chặn người dùng */
+  }
+  const full = validateScheduleInput({ storyboardText: storyboard, imageIds, audioDurationSec });
+
+  if (full.warnings.length) {
+    return c.html(renderPage.scheduleSaved({ row, check: full, audioDurationSec }));
+  }
+  return c.redirect("/schedule", 303);
+});
+
+app.post("/schedule/:id/toggle", async (c) => {
+  const row = await getRow(sql, c.req.param("id"));
+  if (row) await setEnabled(sql, row.id, !row.enabled);
+  return c.redirect("/schedule", 303);
+});
+
+app.post("/schedule/:id/run", async (c) => {
+  const row = await getRow(sql, c.req.param("id"));
+  if (!row) return c.redirect("/schedule", 303);
+  try {
+    const jobId = await createJobFromSchedule(row);
+    await markRow(sql, row.id, { status: "queued", job_id: jobId, last_error: null });
+  } catch (e) {
+    await markRow(sql, row.id, { status: "failed", last_error: e.message.slice(0, 500) });
+  }
+  return c.redirect("/schedule", 303);
+});
+
+app.post("/schedule/:id/delete", async (c) => {
+  const id = c.req.param("id");
+  const row = await getRow(sql, id);
+  if (row) {
+    // Xoá dòng DB và thư mục file trong cùng một thao tác — đây chính là
+    // lý do gộp hai nút thành một: hai nguồn sự thật không được lệch nhau.
+    await deleteRow(sql, id);
+    rmSync(scheduleDir(id), { recursive: true, force: true });
+  }
+  return c.redirect("/schedule", 303);
 });
 
 serve({ fetch: app.fetch, port: PORT }, (info) => {
