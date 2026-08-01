@@ -34,6 +34,18 @@ const SCHEDULE_LABEL = {
 const fmtDate = (d) => new Date(d).toLocaleDateString("vi-VN");
 const fmtTime = (d) => new Date(d).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 
+// Giá trị điền sẵn cho <input type="date"/"time"> trong form Sửa. Phải lấy
+// theo giờ địa phương của server (Asia/Ho_Chi_Minh) bằng getFullYear/getHours
+// v.v — toISOString() trả về UTC, sẽ lệch 7 tiếng so với giờ đã lưu.
+const dateInputValue = (d) => {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+};
+const timeInputValue = (d) => {
+  const x = new Date(d);
+  return `${String(x.getHours()).padStart(2, "0")}:${String(x.getMinutes()).padStart(2, "0")}`;
+};
+
 const CSS = `
 :root{--bg:#0e1116;--panel:#161b22;--line:#242c37;--fg:#e6edf3;--dim:#8b98a5;--red:#d21422;--green:#2ea043;--amber:#d29922}
 *{box-sizing:border-box}
@@ -163,7 +175,16 @@ function nav(active) {
 function scheduleRow(r) {
   let detail = "";
   if (r.status === "done" && r.video_link) {
-    detail = html` · <a href="${r.video_link}" target="_blank" rel="noopener">mở video</a>`;
+    // html của hono escape ký tự HTML nhưng KHÔNG lọc scheme URL — một giá trị
+    // như "javascript:alert(1)" vẫn lọt vào thuộc tính href nguyên vẹn, chỉ
+    // không bị escape gắt. video_link hiện chỉ được ghi từ phản hồi Drive API
+    // (job.drive?.link trong server.mjs) nên chưa có đường khai thác, nhưng
+    // phòng hờ nguồn ghi khác trong tương lai: chỉ render <a> khi chắc chắn
+    // là https, ngược lại hiện text thường không bấm được.
+    const safeLink = /^https:\/\//.test(String(r.video_link)) ? r.video_link : null;
+    detail = safeLink
+      ? html` · <a href="${safeLink}" target="_blank" rel="noopener">mở video</a>`
+      : html` · <span class="mono">${r.video_link}</span>`;
   } else if (r.last_error) {
     detail = html` · <span class="warn">${String(r.last_error).slice(0, 90)}</span>`;
   }
@@ -186,10 +207,39 @@ function scheduleRow(r) {
             ${r.enabled ? "🟢" : "⚪"}</button></form></td>
     <td>${SCHEDULE_LABEL[r.status] || r.status}${detail}${plan}</td>
     <td style="text-align:right;white-space:nowrap">
+      <button class="btn" title="Sửa tên, giờ, storyboard, ghi chú — không đổi file ghi âm/ảnh"
+              onclick="document.getElementById('edit-${r.id}').showModal()">Sửa</button>
       ${post("run", "Chạy ngay", "Bỏ qua giờ hẹn, đẩy vào hàng đợi luôn")}
       ${post("delete", "Xoá", "Xoá cả dòng lịch lẫn file đã upload")}
     </td>
   </tr>`;
+}
+
+// r.id nội suy thẳng vào chuỗi onclick (ngữ cảnh JS, không phải HTML) — an
+// toàn vì id đến từ cột bigserial của Postgres, luôn là chuỗi chỉ gồm chữ số
+// (postgres.js trả bigint dạng string, không parse thành number), không bao
+// giờ chứa ký tự phá vỡ ngữ cảnh chuỗi/JS như dữ liệu người dùng nhập tay.
+function editDialog(r) {
+  return html`<dialog id="edit-${r.id}">
+    <form method="post" action="/schedule/${r.id}/edit">
+      <div class="head"><strong>Sửa lịch #${r.id}</strong>
+        <button type="button" class="btn" style="margin-left:auto"
+                onclick="document.getElementById('edit-${r.id}').close()">Đóng</button></div>
+      <div class="body">
+        <div class="field"><label>Tên</label><input name="name" required value="${r.name}" /></div>
+        <div class="row2">
+          <div class="field"><label>Ngày</label>
+            <input type="date" name="date" required value="${dateInputValue(r.run_at)}" /></div>
+          <div class="field"><label>Giờ</label>
+            <input type="time" name="time" required value="${timeInputValue(r.run_at)}" /></div>
+        </div>
+        <div class="field"><label>Storyboard (dán bảng markdown)</label>
+          <textarea name="storyboard" required>${r.storyboard}</textarea></div>
+        <div class="field"><label>Ghi chú</label><input name="note" value="${r.note || ""}" /></div>
+        <button class="btn primary" type="submit">Lưu thay đổi</button>
+      </div>
+    </form>
+  </dialog>`;
 }
 
 function addDialog() {
@@ -354,6 +404,7 @@ for (const tr of document.querySelectorAll('tr.s-active')) {
                   onclick="document.getElementById('add').showModal()">+ Thêm lịch</button>
         </h2>
         ${body}
+        ${rows.map(editDialog)}
         ${addDialog()}
       </main>`);
   },

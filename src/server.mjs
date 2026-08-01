@@ -27,7 +27,7 @@ import {
 import { getSql, initSchema } from "./db.mjs";
 import { validateScheduleInput } from "./schedule-validate.mjs";
 import { brandFromParams, parseStoryboard } from "./storyboard.mjs";
-import { claimById, createRow, deleteRow, getRow, listRows, markRow, setEnabled } from "./schedule.mjs";
+import { claimById, createRow, deleteRow, getRow, listRows, markRow, setEnabled, updateRow } from "./schedule.mjs";
 import { lastTick, startScheduler } from "./scheduler.mjs";
 import { probeDuration } from "./adscan.mjs";
 
@@ -569,6 +569,39 @@ app.post("/schedule/:id/toggle", async (c) => {
   if (id === null) return c.redirect("/schedule", 303);
   const row = await getRow(sql, id);
   if (row) await setEnabled(sql, row.id, !row.enabled);
+  return c.redirect("/schedule", 303);
+});
+
+app.post("/schedule/:id/edit", async (c) => {
+  const id = parseScheduleId(c);
+  if (id === null) return c.redirect("/schedule", 303);
+
+  const body = await c.req.parseBody({ all: true });
+  const name = String(body.name || "").trim();
+  const date = String(body.date || "").trim();
+  const time = String(body.time || "").trim();
+  const storyboard = String(body.storyboard || "");
+  const note = String(body.note || "");
+
+  if (!name || !date || !time) return c.html(renderPage.scheduleError("Thiếu tên, ngày hoặc giờ"), 400);
+
+  const timeNorm = /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
+  const runAt = new Date(`${date}T${timeNorm}`);
+  if (Number.isNaN(runAt.getTime())) return c.html(renderPage.scheduleError("Ngày giờ không hợp lệ"), 400);
+
+  // Form sửa không có ô ảnh, nên chỉ kiểm tra được text — imageIds rỗng nghĩa
+  // là mọi tham chiếu ảnh trong storyboard đều bị coi là "thiếu". Đây là kiểm
+  // tra nông hơn vòng tạo mới (không có audioDurationSec, không biết ảnh cũ),
+  // nhưng đủ chặn storyboard rỗng hoặc sai định dạng bảng.
+  const check = validateScheduleInput({ storyboardText: storyboard, imageIds: [], audioDurationSec: 0 });
+  if (!check.ok) return c.html(renderPage.scheduleError(check.errors.join(" · ")), 400);
+
+  // Sửa không đụng tới file ghi âm/ảnh — chúng đã nằm sẵn trong
+  // work/schedule/<id>/input/, form sửa không có ô upload. Muốn đổi file thì
+  // xoá lịch tạo lại. Nếu dòng này đang "bay" (claimed/queued/running), job đã
+  // copy file + storyboard sang thư mục riêng của job từ trước, nên sửa ở đây
+  // không ảnh hưởng job đang chạy — chỉ có tác dụng cho lần chạy kế tiếp.
+  await updateRow(sql, id, { name, runAt, storyboard, note });
   return c.redirect("/schedule", 303);
 });
 
