@@ -120,3 +120,19 @@ export function imageIdFromRef(ref) {
   const id = noExt.trim();
   return id && !/^(cut|zoom|fade|giữ hình|text overlay)/i.test(id) ? id : null;
 }
+
+/**
+ * Storyboard đã khai sẵn thương hiệu và ngày ở khối "Thông số dựng":
+ *   - **Thương hiệu:** BẢN TIN · THỜI SỰ — trung lập, không mạo danh báo/đài
+ *   - **Ngày ghi trên thanh trên cùng (topbar):** 27 · 07 — ngày phát bản tin
+ * Lấy luôn từ đó thay vì bắt người dùng nhập lại trên form.
+ * Phần sau dấu "—" là ghi chú cho người đọc, không phải dữ liệu.
+ */
+export function brandFromParams(params = {}) {
+  const clean = (s) => String(s || "").split("—")[0].trim();
+
+  const [name, sub] = clean(params["thương hiệu"]).split("·").map((s) => s.trim());
+  const date = clean(params["ngày ghi trên thanh trên cùng (topbar)"] || params["ngày"]);
+
+  return { name: name || "BẢN TIN", sub: sub || "TỔNG HỢP", date: date || "" };
+}
