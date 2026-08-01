@@ -91,51 +91,59 @@ async function pump() {
   // không được giải phóng, và hàng đợi đứng im — đặc biệt nguy hiểm khi chạy
   // theo lịch lúc 3h sáng không có ai bấm Huỷ.
   const timeoutMs = Number(process.env.JOB_TIMEOUT_MS || 7_200_000);
-  let timedOut = false;
+  const job = runJob(jobId, { registerChild: (c) => kids.add(c) });
+
   let timer = null;
+  let killTimer = null;
 
   try {
-    const job = runJob(jobId, { registerChild: (c) => kids.add(c) });
-    const guard = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        // Dùng lại đúng cơ chế của nút Huỷ: giết tiến trình con để runJob
-        // thoát ra, rồi ghi đè trạng thái bằng mã "timeout".
-        for (const child of kids) {
-          try { child.kill("SIGTERM"); } catch { /* có thể đã chết */ }
-        }
-        setTimeout(() => {
-          for (const child of kids) {
-            try { child.kill("SIGKILL"); } catch { /* đã chết */ }
-          }
-        }, 10_000);
-        reject(new Error("timeout"));
-      }, timeoutMs);
+    // KHÔNG dùng Promise.race + reject: reject sẽ ném ngay lập tức và nhảy
+    // qua đoạn chờ runJob dọn dẹp, khiến mã "timeout" bị runJob ghi đè ngay
+    // sau đó (render_failed chẳng hạn). Dùng promise phân xử trả về boolean.
+    const timedOut = await new Promise((resolve) => {
+      timer = setTimeout(() => resolve(true), timeoutMs);
+      job.then(() => resolve(false), () => resolve(false));
     });
-
-    await Promise.race([job, guard]);
-
-    if (timedOut) await job.catch(() => {}); // để runJob dọn xong đã
-  } catch (e) {
-    if (!timedOut) console.error(`[job ${jobId}]`, e);
-  } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
 
     if (timedOut) {
-      // Ghi SAU khi runJob settle, nếu không nó sẽ đè lại bằng render_failed.
-      patchStatus(jobId, {
-        status: "failed",
-        stage: { name: "failed", progress: null, detail: null },
-        error: {
-          code: "timeout",
-          stage: "unknown",
-          message: `Job vượt trần ${Math.round(timeoutMs / 60000)} phút — đã dừng để giải phóng hàng đợi`,
-          retryable: false,
-        },
-      });
-      log(jobId, `FAILED [timeout] quá ${Math.round(timeoutMs / 60000)} phút`);
-    }
+      // Dùng lại đúng cơ chế của nút Huỷ: giết tiến trình con để runJob
+      // thoát ra, rồi ghi đè trạng thái bằng mã "timeout".
+      for (const child of kids) {
+        try { child.kill("SIGTERM"); } catch { /* có thể đã chết */ }
+      }
+      killTimer = setTimeout(() => {
+        for (const child of kids) {
+          try { child.kill("SIGKILL"); } catch { /* đã chết */ }
+        }
+      }, 10_000);
 
+      // Chờ runJob settle THẬT rồi mới ghi đè — nếu không nó sẽ ghi đè ngược lại.
+      await job.catch(() => {});
+      clearTimeout(killTimer); // child chết sạch rồi thì đừng giữ timer 10s treo
+
+      try {
+        patchStatus(jobId, {
+          status: "failed",
+          stage: { name: "failed", progress: null, detail: null },
+          error: {
+            code: "timeout",
+            stage: "unknown",
+            message: `Job vượt trần ${Math.round(timeoutMs / 60000)} phút — đã dừng để giải phóng hàng đợi`,
+            retryable: false,
+          },
+        });
+        log(jobId, `FAILED [timeout] quá ${Math.round(timeoutMs / 60000)} phút`);
+      } catch (e) {
+        console.error(`[job ${jobId}] không ghi được trạng thái timeout:`, e);
+      }
+    }
+  } catch (e) {
+    console.error(`[job ${jobId}]`, e);
+  } finally {
+    // Chỉ ba dòng giải phóng hàng đợi ở đây — không thao tác I/O nào, để
+    // patchStatus ném lỗi (đĩa đầy, file khoá...) không bao giờ chặn được
+    // đường giải phóng running/pump().
     children.delete(jobId);
     running = null;
     setImmediate(pump);
