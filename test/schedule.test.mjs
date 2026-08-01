@@ -4,7 +4,7 @@ import postgres from "postgres";
 
 import { initSchema } from "../src/db.mjs";
 import {
-  claimDue, createRow, deleteRow, getRow, listRows, markRow, reclaimStale,
+  claimById, claimDue, createRow, deleteRow, getRow, listRows, markRow, reclaimStale,
   resetToPending, rowsInFlight, scheduleRetry, setEnabled, updateRow,
 } from "../src/schedule.mjs";
 
@@ -125,6 +125,21 @@ test("claimDue: hai client tranh nhau chỉ một bên nhặt được", { skip 
     await a.end({ timeout: 5 });
     await b.end({ timeout: 5 });
   }
+});
+
+test("claimById: chỉ nhặt được dòng không đang bay", { skip }, async () => {
+  const r = await seed();
+  const first = await claimById(sql, r.id);
+  assert.ok(first, "dòng pending phải nhặt được");
+  assert.equal(first.status, "claimed");
+
+  assert.equal(await claimById(sql, r.id), null, "dòng đang claimed thì không nhặt lại được");
+
+  await markRow(sql, r.id, { status: "running" });
+  assert.equal(await claimById(sql, r.id), null, "dòng đang running thì không nhặt được");
+
+  await markRow(sql, r.id, { status: "done" });
+  assert.ok(await claimById(sql, r.id), "dòng đã xong thì chạy lại được");
 });
 
 test("markRow cập nhật trạng thái và lỗi", { skip }, async () => {

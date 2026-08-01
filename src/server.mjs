@@ -27,7 +27,7 @@ import {
 import { getSql, initSchema } from "./db.mjs";
 import { validateScheduleInput } from "./schedule-validate.mjs";
 import { brandFromParams, parseStoryboard } from "./storyboard.mjs";
-import { createRow, deleteRow, getRow, listRows, markRow, setEnabled } from "./schedule.mjs";
+import { claimById, createRow, deleteRow, getRow, listRows, markRow, setEnabled } from "./schedule.mjs";
 import { lastTick, startScheduler } from "./scheduler.mjs";
 import { probeDuration } from "./adscan.mjs";
 
@@ -575,23 +575,25 @@ app.post("/schedule/:id/toggle", async (c) => {
 app.post("/schedule/:id/run", async (c) => {
   const id = parseScheduleId(c);
   if (id === null) return c.redirect("/schedule", 303);
-  const row = await getRow(sql, id);
-  if (!row) return c.redirect("/schedule", 303);
 
-  // Dòng đang bay (claimed/queued/running) đã có job của chính nó đang chạy
-  // hoặc chờ chạy. Tạo thêm job thứ hai ở đây rồi markRow ghi đè job_id sẽ
-  // làm job đầu "mồ côi": nó vẫn render 45-70 phút và vẫn upload Drive, nhưng
-  // không dòng lịch nào còn trỏ tới để đối soát chạm lại — đúng kiểu song
-  // sinh mà FOR UPDATE SKIP LOCKED trong claimDue được dựng lên để chặn, chỉ
-  // là đường "Chạy ngay" đi vòng qua nó vì không claim gì cả.
-  if (!["pending", "failed", "missed", "done"].includes(row.status)) {
-    return c.redirect("/schedule", 303);
-  }
+  // claimById là UPDATE ... WHERE status IN (...) nguyên tử: hai request "Chạy
+  // ngay" gần như đồng thời, hoặc route chạm đúng lúc tick đang claimDue, chỉ
+  // đúng một bên khớp WHERE và nhặt được dòng — bên kia nhận null. Trước đây
+  // route đọc bằng getRow rồi mới kiểm tra status (check-then-act không
+  // nguyên tử): khe hở giữa đọc và ghi đủ để cả hai bên cùng thấy 'pending'
+  // và cùng tạo job — hai video từ một dòng lịch, đúng thứ FOR UPDATE SKIP
+  // LOCKED trong claimDue được dựng lên để chặn nhưng đường chạy tay đi vòng
+  // qua vì không claim gì cả.
+  const row = await claimById(sql, id);
+  if (!row) return c.redirect("/schedule", 303); // không tồn tại, hoặc đang bay
 
   try {
     const jobId = await createJobFromSchedule(row);
     await markRow(sql, row.id, { status: "queued", job_id: jobId, last_error: null });
   } catch (e) {
+    // Dòng đã bị claimById chuyển sang 'claimed' — không đánh 'failed' ở đây
+    // thì nó kẹt vĩnh viễn. Nếu tiến trình chết đúng khoảnh khắc giữa hai dòng
+    // trên, reclaimStale (vòng tick) sẽ cứu nó về 'pending' sau tối đa 10 phút.
     await markRow(sql, row.id, { status: "failed", last_error: e.message.slice(0, 500) });
   }
   return c.redirect("/schedule", 303);

@@ -84,6 +84,25 @@ export async function claimDue(sql) {
 }
 
 /**
+ * Nhặt MỘT dòng theo id, nguyên tử — dùng cho nút "Chạy ngay".
+ *
+ * claimDue nhặt theo giờ hẹn; hàm này nhặt theo id nhưng vẫn giữ nguyên tính
+ * nguyên tử. Nếu không có nó, đường chạy tay đi vòng qua FOR UPDATE SKIP LOCKED
+ * và hai request đồng thời sẽ dựng hai video từ một dòng lịch.
+ *
+ * Trả null khi dòng không tồn tại HOẶC đang ở trạng thái không cho chạy lại.
+ */
+export async function claimById(sql, id) {
+  const [row] = await sql`
+    UPDATE schedule
+       SET status = 'claimed', claimed_at = now(), updated_at = now()
+     WHERE id = ${id}
+       AND status IN ('pending', 'failed', 'missed', 'done')
+     RETURNING *`;
+  return row || null;
+}
+
+/**
  * Server chết đúng khoảnh khắc giữa claim và enqueue thì dòng kẹt ở 'claimed'.
  * Quá staleMs thì trả về pending để tick sau nhặt lại.
  *
