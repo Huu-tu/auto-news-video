@@ -18,6 +18,15 @@ export function jobDir(id) {
   return join(WORK_DIR, id);
 }
 
+/**
+ * Thư mục dữ liệu của một dòng lịch: file ghi âm và ảnh do người dùng upload.
+ * Khác với jobDir — thư mục này sống lâu, mỗi lần chạy sẽ COPY từ đây sang
+ * thư mục job. Nhờ vậy dọn dẹp job không làm mất nguồn để chạy lại.
+ */
+export function scheduleDir(id) {
+  return join(WORK_DIR, "schedule", String(id));
+}
+
 export function newJobId() {
   const t = Date.now().toString(36);
   return `job_${t}${randomBytes(4).toString("hex")}`;
