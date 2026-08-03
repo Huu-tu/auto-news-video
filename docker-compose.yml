@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        WHISPER_MODEL: large-v3
+        HYPERFRAMES_VERSION: "0.7.86"
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      PYTHON_BIN: python3
+      TZ: Asia/Ho_Chi_Minh
+      WORK_DIR: /data
+      PORT: "8080"
+
+    shm_size: 1gb
+
+    init: true
+
+    ports:
+      - "5678:3000"
+
+    volumes:
+      - bantin-data:/data
+      - bantin-hf:/root/.cache/huggingface
+      - bantin-claude:/root/.claude
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  bantin-data:
+  bantin-hf:
+  bantin-claude:
