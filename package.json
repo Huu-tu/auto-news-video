@@ -12,7 +12,7 @@
     "dev": "node --env-file-if-exists=.env --watch src/server.mjs",
     "drive:auth": "node --env-file-if-exists=.env scripts/drive-auth.mjs",
     "doctor": "node --env-file-if-exists=.env scripts/doctor.mjs",
-    "test": "node --test \"test/**/*.test.mjs\""
+    "test": "node --env-file-if-exists=.env --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

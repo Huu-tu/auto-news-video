@@ -1,8 +1,3 @@
-// Kết nối PostgreSQL cho bảng lịch.
-//
-// PHÂN VAI: PostgreSQL trả lời "chạy cái gì, lúc nào". Đĩa trả lời "lần chạy
-// đó ra sao". Job store trong store.mjs vẫn nằm trên hệ thống file — xem spec
-// mục 1 để biết vì sao không gộp cả hai vào đây.
 import postgres from "postgres";
 
 let sql = null;
@@ -15,7 +10,7 @@ export function getSql() {
 
   sql = postgres(url, {
     max: 4,
-    onnotice: () => {}, // "relation already exists" của CREATE IF NOT EXISTS — không cần in
+    onnotice: () => {}, 
   });
   return sql;
 }
@@ -26,10 +21,6 @@ export async function closeSql() {
   sql = null;
 }
 
-/**
- * Một bảng duy nhất thì CREATE TABLE IF NOT EXISTS là đủ — thêm framework
- * migration vào đây là trả giá cho thứ không dùng.
- */
 export async function initSchema(client = getSql()) {
   await client`
     CREATE TABLE IF NOT EXISTS schedule (

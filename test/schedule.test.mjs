@@ -12,8 +12,8 @@ const URL = process.env.TEST_DATABASE_URL;
 const skip = URL ? false : "cần TEST_DATABASE_URL trỏ tới một database dùng riêng cho test";
 
 let sql;
-const soon = () => new Date(Date.now() - 1000);       // đã đến hạn
-const later = () => new Date(Date.now() + 3600_000);  // một tiếng nữa
+const soon = () => new Date(Date.now() - 1000);       
+const later = () => new Date(Date.now() + 3600_000);  
 
 before(async () => {
   if (!URL) return;

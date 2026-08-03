@@ -1,10 +1,3 @@
-// Parse storyboard markdown (đúng định dạng bảng bạn đang viết tay) thành
-// script.txt + bản đồ ảnh. Không bắt đổi format — cột nào thiếu thì bỏ qua.
-//
-// Bảng mong đợi:
-//   | #  | Thời điểm | Lời thoại | Thời lượng | Hình ảnh gợi ý | Ghi chú chuyển cảnh |
-//
-// Dòng "nghỉ 1,2s" (cột # là "—") không phải lời thoại → không vào script.txt.
 
 const SEP_ROW = /^\|[\s:|-]+\|$/;
 
@@ -13,7 +6,6 @@ function splitRow(line) {
   return t.split("|").map((c) => c.trim());
 }
 
-/** Bỏ ** __ ` và link markdown để lấy chữ đọc được. */
 function plain(s) {
   return s
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -21,11 +13,6 @@ function plain(s) {
     .trim();
 }
 
-/**
- * Như plain() nhưng GIỮ dấu gạch dưới — dùng cho ô đường dẫn file.
- * `image_1.png` mà bị xoá `_` sẽ thành id "image1", không khớp field multipart
- * `image_image_1` client gửi lên, và ảnh sẽ im lặng biến mất khỏi video.
- */
 function plainPath(s) {
   return s
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -33,7 +20,6 @@ function plainPath(s) {
     .trim();
 }
 
-/** Lời thoại thường nằm trong ngoặc kép — bỏ ngoặc ngoài cùng. */
 function stripQuotes(s) {
   return s.replace(/^["“”'']+/, "").replace(/["“”'']+$/, "").trim();
 }
@@ -47,20 +33,15 @@ function findCol(header, ...keywords) {
   return -1;
 }
 
-/**
- * @returns {{ params: object, rows: Array<{n:string,time:string,text:string,dur:string,image:string|null,note:string}> }}
- */
 export function parseStoryboard(md) {
   const lines = md.split(/\r?\n/);
 
-  // ── Thông số dựng: các dòng "- **Khoá:** giá trị" ────────────────────────
   const params = {};
   for (const l of lines) {
     const m = l.match(/^\s*[-*]\s+\*\*(.+?)\s*:?\*\*\s*:?\s*(.+?)\s*$/);
     if (m) params[plain(m[1]).toLowerCase()] = plain(m[2]);
   }
 
-  // ── Bảng kịch bản ────────────────────────────────────────────────────────
   let header = null;
   let cols = null;
   const rows = [];
@@ -91,7 +72,6 @@ export function parseStoryboard(md) {
     const text = stripQuotes(get(cols.text));
     const n = get(cols.n);
 
-    // dòng nghỉ / phân cách: không có lời thoại thật
     if (!text || text === "—" || text === "-") continue;
 
     let image = (cols.image >= 0 && cols.image < cells.length ? plainPath(cells[cols.image]) : "") || null;
@@ -103,16 +83,10 @@ export function parseStoryboard(md) {
   return { params, rows };
 }
 
-/** script.txt cho align_script.py — mỗi dòng một câu, thứ tự = index segment. */
 export function toScriptText(rows) {
   return rows.map((r) => r.text.replace(/\s+/g, " ").trim()).join("\n") + "\n";
 }
 
-/**
- * Cột "Hình ảnh gợi ý" trong storyboard hay ghi đường dẫn kiểu
- * `/prompts /image/image_2.png`. Chỉ lấy phần tên file không đuôi làm id, để
- * khớp với field multipart `image_<id>` client gửi lên.
- */
 export function imageIdFromRef(ref) {
   if (!ref) return null;
   const base = ref.split(/[\\/]/).pop() || ref;
@@ -121,13 +95,6 @@ export function imageIdFromRef(ref) {
   return id && !/^(cut|zoom|fade|giữ hình|text overlay)/i.test(id) ? id : null;
 }
 
-/**
- * Storyboard đã khai sẵn thương hiệu và ngày ở khối "Thông số dựng":
- *   - **Thương hiệu:** BẢN TIN · THỜI SỰ — trung lập, không mạo danh báo/đài
- *   - **Ngày ghi trên thanh trên cùng (topbar):** 27 · 07 — ngày phát bản tin
- * Lấy luôn từ đó thay vì bắt người dùng nhập lại trên form.
- * Phần sau dấu "—" là ghi chú cho người đọc, không phải dữ liệu.
- */
 export function brandFromParams(params = {}) {
   const clean = (s) => String(s || "").split("—")[0].trim();
 

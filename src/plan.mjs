@@ -1,12 +1,5 @@
-// Bước DUY NHẤT trong pipeline cần trí tuệ: chia bản tin thành các cảnh.
-//
-// Gọi Claude Code headless đúng một lần, nhận về chapters.src.json (cảnh đánh
-// theo DÒNG kịch bản, không phải giây), rồi validate bằng schema tự viết.
-// Sai schema → retry → fallback bố cục mặc định. LLM trả rác cũng không giết job.
 import { spawn } from "node:child_process";
 
-// ── Hợp đồng dữ liệu ────────────────────────────────────────────────────────
-// Field bắt buộc theo từng kind, khớp templates/vn-news-vertical/build.mjs.
 const KINDS = {
   intro: ["kicker", "head"],
   divider: ["head"],
@@ -20,11 +13,6 @@ const KINDS = {
   keys: ["cat", "keys"],
 };
 
-/**
- * @returns {{ ok: boolean, errors: string[] }}
- */
-/** Vài kind sai đoán trước được -> ánh xạ về kind thật. Không im lặng: trả về
- *  danh sách đã đổi để ghi log. */
 const KIND_ALIAS = { outro: "divider", ending: "divider", section: "divider", point: "story", fact: "stat" };
 
 export function normalizeKinds(cards) {
@@ -62,7 +50,6 @@ export function validateChapters(cards, lineCount) {
     if (c.kind === "tiles" && !Array.isArray(c.tiles)) errors.push(`${at}: tiles phải là mảng`);
     if (c.kind === "keys" && !Array.isArray(c.keys)) errors.push(`${at}: keys phải là mảng`);
 
-    // line: số thứ tự dòng kịch bản, hoặc "intro"/"outro"
     const L = c.line;
     if (L === "intro") {
       if (i !== 0) errors.push(`${at}: line "intro" phải là cảnh đầu tiên`);
@@ -76,7 +63,6 @@ export function validateChapters(cards, lineCount) {
       errors.push(`${at}: line ${JSON.stringify(L)} ngoài khoảng 0..${lineCount - 1}`);
       return;
     }
-    // mkchapters.mjs sẽ ném lỗi nếu mốc giây không tăng — chặn sớm ở đây
     if (L <= prevLine) errors.push(`${at}: line ${L} không tăng so với cảnh trước (${prevLine})`);
     prevLine = L;
   });
@@ -84,11 +70,6 @@ export function validateChapters(cards, lineCount) {
   return { ok: errors.length === 0, errors };
 }
 
-// ── Bố cục fallback ─────────────────────────────────────────────────────────
-/**
- * Khi LLM hỏng hoặc bị tắt: intro → mỗi dòng kịch bản một thẻ story → outro.
- * Xấu hơn bản LLM soạn, nhưng luôn dựng ra video hợp lệ.
- */
 export function fallbackChapters(rows, brand) {
   const cards = [
     { line: "intro", kind: "intro", kicker: "ĐIỂM TIN NHANH", head: brand.name || "BẢN TIN", sub: brand.date || "" },
@@ -107,7 +88,6 @@ export function fallbackChapters(rows, brand) {
   return cards;
 }
 
-// ── Prompt gửi Claude Code ──────────────────────────────────────────────────
 function buildPrompt({ rows, brand, images, errors = [] }) {
   const correction = errors.length
     ? `\n\nLẦN TRƯỚC BẠN TRẢ SAI, sửa đúng những điểm này:\n${errors.slice(0, 8).map((e) => `- ${e}`).join("\n")}\n`
@@ -155,12 +135,8 @@ Kịch bản (index: nội dung):
 ${script}${correction}`;
 }
 
-// ── Gọi Claude Code ─────────────────────────────────────────────────────────
 function runClaude(prompt, { bin, timeoutMs = 300000 }) {
   return new Promise((resolve, reject) => {
-    // Bước này thuần sinh văn bản: không đọc file, không chạy lệnh, nên bình
-    // thường không có gì để xin quyền. Nếu môi trường của bạn vẫn hỏi, khai
-    // thêm cờ qua CLAUDE_EXTRA_ARGS trong .env (xem .env.example).
     const extra = (process.env.CLAUDE_EXTRA_ARGS || "").split(/\s+/).filter(Boolean);
     const child = spawn(bin, ["-p", "--output-format", "json", ...extra], { stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
@@ -187,17 +163,14 @@ function runClaude(prompt, { bin, timeoutMs = 300000 }) {
   });
 }
 
-/** Lôi mảng JSON ra khỏi output — chịu được cả khi model bọc trong ``` hay text thừa. */
 export function extractJsonArray(raw) {
   let text = raw.trim();
 
-  // `claude -p --output-format json` bọc kết quả trong { result: "..." }
   try {
     const envelope = JSON.parse(text);
     if (envelope && typeof envelope.result === "string") text = envelope.result;
     else if (Array.isArray(envelope)) return envelope;
   } catch {
-    /* không phải envelope JSON — dùng nguyên văn */
   }
 
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -209,9 +182,6 @@ export function extractJsonArray(raw) {
   return JSON.parse(text.slice(start, end + 1));
 }
 
-/**
- * @returns {{ cards: object[], source: "llm"|"fallback", attempts: number, errors: string[] }}
- */
 export async function planChapters({ rows, brand, images, bin = "claude", fallbackOnly = false, retries = 2, onLog = () => {} }) {
   if (fallbackOnly) {
     onLog("PLAN_FALLBACK_ONLY=1 → bỏ qua LLM");

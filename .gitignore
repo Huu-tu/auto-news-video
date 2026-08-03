@@ -8,13 +8,13 @@ __pycache__/
 .venv/
 venv/
 
+# ── Dữ liệu chạy ─────────────────────────────────────────────────────────────
+work/*
+!work/.gitkeep
+
 # ── Linh tinh ────────────────────────────────────────────────────────────────
 *.log
 .DS_Store
 
-# Playwright MCP scratch
 .playwright-mcp/
-
-# Artifact quy trình (brainstorm/plan/report của skill superpowers) — dùng để
-# làm việc, không phải một phần của sản phẩm, không nên lọt vào lịch sử commit.
 .superpowers/

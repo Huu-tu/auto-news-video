@@ -1,6 +1,3 @@
-// Trang quản lý — HTML render phía server, không build step, không framework.
-// Trang này chỉ có một danh sách, một form và một thanh tiến độ; thêm bundler
-// vào Docker image chỉ để làm ngần ấy việc là không đáng.
 import { html, raw } from "hono/html";
 
 const esc = (s) =>
@@ -34,9 +31,6 @@ const SCHEDULE_LABEL = {
 const fmtDate = (d) => new Date(d).toLocaleDateString("vi-VN");
 const fmtTime = (d) => new Date(d).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 
-// Giá trị điền sẵn cho <input type="date"/"time"> trong form Sửa. Phải lấy
-// theo giờ địa phương của server (Asia/Ho_Chi_Minh) bằng getFullYear/getHours
-// v.v — toISOString() trả về UTC, sẽ lệch 7 tiếng so với giờ đã lưu.
 const dateInputValue = (d) => {
   const x = new Date(d);
   return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
@@ -119,6 +113,28 @@ function fmtDur(sec) {
   return `${m}:${String(Math.round(sec % 60)).padStart(2, "0")}`;
 }
 
+function fmtClock(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())} · ${d.getDate()}/${d.getMonth() + 1}`;
+}
+
+function fmtRunDur(sec) {
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const h = Math.floor(m / 60);
+  return h ? `${h}h${String(m % 60).padStart(2, "0")}` : `${m}m${String(Math.round(sec % 60)).padStart(2, "0")}s`;
+}
+
+function runElapsed(j) {
+  const total = j.timings_sec?.total;
+  if (typeof total === "number") return fmtRunDur(total);
+  if (!j.started_at) return "";
+  if (["done", "failed", "cancelled"].includes(j.status)) return "";
+  return fmtRunDur(Math.max(0, (Date.now() - Date.parse(j.started_at)) / 1000));
+}
+
 function jobRow(j) {
   const pct = Math.round((j.stage?.progress || 0) * 100);
   const active = !["done", "failed", "cancelled"].includes(j.status);
@@ -127,6 +143,8 @@ function jobRow(j) {
       ${j.queue_position ? `<span class="mono">#${j.queue_position}</span>` : ""}</td>
     <td><div class="mono">${esc(j.job_id)}</div>${esc(j.brand?.sub || j.metadata?.channel || "")}</td>
     <td>${esc(j.brand?.date || "")}</td>
+    <td><div class="mono">${esc(fmtClock(j.started_at || j.created_at))}</div>
+      ${runElapsed(j) ? `<div class="mono" style="opacity:.65">${esc(runElapsed(j))}</div>` : ""}</td>
     <td>${active ? `<div class="bar"><i style="width:${pct}%"></i></div><div class="mono">${esc(j.stage?.detail || "")}</div>` : fmtDur(j.artifacts?.duration_sec)}</td>
     <td>${j.warnings?.length ? `<span class="warn" title="${esc(j.warnings.map((w) => w.message).join(" · "))}">${j.warnings.length} cảnh báo</span>` : ""}
         ${j.plan_source === "fallback" ? '<span class="warn">fallback</span>' : ""}</td>
@@ -151,11 +169,6 @@ function templateCard(t) {
   </div>`;
 }
 
-/**
- * Khung trang dùng chung cho các trang mới. Dùng `html` của hono thay cho nối
- * chuỗi: nội suy được escape mặc định, muốn chèn HTML thô phải nói rõ raw().
- * dashboard() giữ nguyên cách cũ — chuyển dần, không đập đi làm lại.
- */
 function page(inner) {
   return html`<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -175,12 +188,6 @@ function nav(active) {
 function scheduleRow(r) {
   let detail = "";
   if (r.status === "done" && r.video_link) {
-    // html của hono escape ký tự HTML nhưng KHÔNG lọc scheme URL — một giá trị
-    // như "javascript:alert(1)" vẫn lọt vào thuộc tính href nguyên vẹn, chỉ
-    // không bị escape gắt. video_link hiện chỉ được ghi từ phản hồi Drive API
-    // (job.drive?.link trong server.mjs) nên chưa có đường khai thác, nhưng
-    // phòng hờ nguồn ghi khác trong tương lai: chỉ render <a> khi chắc chắn
-    // là https, ngược lại hiện text thường không bấm được.
     const safeLink = /^https:\/\//.test(String(r.video_link)) ? r.video_link : null;
     detail = safeLink
       ? html` · <a href="${safeLink}" target="_blank" rel="noopener">mở video</a>`
@@ -189,8 +196,6 @@ function scheduleRow(r) {
     detail = html` · <span class="warn">${String(r.last_error).slice(0, 90)}</span>`;
   }
 
-  // Bố cục fallback nghĩa là bước LLM không chạy — video vẫn ra nhưng nghèo hẳn.
-  // Ở chế độ tự động không ai xem lại từng video, nên phải hiện ra ở đây.
   const plan = r.plan_source === "fallback" ? html` <span class="warn">fallback</span>` : "";
 
   const post = (path, label, title) => html`
@@ -215,10 +220,6 @@ function scheduleRow(r) {
   </tr>`;
 }
 
-// r.id nội suy thẳng vào chuỗi onclick (ngữ cảnh JS, không phải HTML) — an
-// toàn vì id đến từ cột bigserial của Postgres, luôn là chuỗi chỉ gồm chữ số
-// (postgres.js trả bigint dạng string, không parse thành number), không bao
-// giờ chứa ký tự phá vỡ ngữ cảnh chuỗi/JS như dữ liệu người dùng nhập tay.
 function editDialog(r) {
   return html`<dialog id="edit-${r.id}">
     <form method="post" action="/schedule/${r.id}/edit">
@@ -285,6 +286,7 @@ export const renderPage = {
   <span class="pill">BẢN TIN</span><h1>Studio</h1>
   <span class="stat">${jobs.length} job · ${active} đang chạy</span>
 </header>
+${nav("/")}
 <main>
   <h2>Template</h2>
   ${templates.length ? templates.map(templateCard).join("") : '<div class="empty">Chưa có template nào trong templates/</div>'}
@@ -292,7 +294,7 @@ export const renderPage = {
   <h2>Video</h2>
   ${
     jobs.length
-      ? `<table><thead><tr><th>Trạng thái</th><th>Job</th><th>Ngày phát</th><th>Tiến độ / độ dài</th><th></th><th></th></tr></thead>
+      ? `<table><thead><tr><th>Trạng thái</th><th>Job</th><th title="Chữ in trên thanh đầu video, lấy từ storyboard — không phải lúc job chạy">Ngày trên video</th><th title="Lúc job bắt đầu chạy, và tổng thời gian chạy">Chạy lúc</th><th>Tiến độ / độ dài</th><th></th><th></th></tr></thead>
          <tbody id="rows">${jobs.map(jobRow).join("")}</tbody></table>`
       : '<div class="empty">Chưa có video nào. Bấm “Tạo video” ở trên.</div>'
   }
@@ -310,6 +312,17 @@ export const renderPage = {
   <label>Storyboard (.md)</label><input type="file" name="storyboard" accept=".md,.markdown,.txt">
   <label>… hoặc dán thẳng nội dung storyboard</label><textarea name="storyboard_text" placeholder="| # | Thời điểm | Lời thoại | ..."></textarea>
   <label>Ảnh (chọn nhiều, ≤10 MB mỗi file)</label><input type="file" name="images" accept="image/*" multiple>
+
+  <label style="margin-top:16px">Chạy lúc — để trống thì dựng ngay</label>
+  <div class="row2">
+    <input type="date" name="run_date">
+    <input type="time" name="run_time" value="09:00">
+  </div>
+  <div class="mono" style="margin-top:6px;color:var(--dim);font-size:12px">
+    Điền ngày giờ = tạo một dòng ở trang <b>Lịch</b> thay vì dựng ngay, và sửa lại được sau.
+    Khi đó thương hiệu · chuyên mục · ngày topbar lấy từ mục “Thông số dựng” trong storyboard,
+    không lấy từ ba ô trên.
+  </div>
   <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
     <a class="btn" href="#" onclick="document.getElementById('new').close();return false">Huỷ</a>
     <button class="btn primary" type="submit">Bắt đầu dựng</button>
@@ -329,6 +342,35 @@ const api = (p, o) => fetch('/v1' + p + (p.includes('?') ? '&' : '?') + (tok ? '
 async function submitJob(e){
   e.preventDefault();
   const f = e.target, err = document.getElementById('err');
+
+  // Có điền "Chạy lúc" thì đi ĐƯỜNG KHÁC HẲN: không tạo job chạy ngay mà ghi
+  // một dòng vào bảng lịch, để vòng tick nhặt khi tới giờ. Nhờ vậy nó sửa/xoá
+  // /bật tắt được, còn job ở /v1/jobs thì tạo xong là chạy, không quay lại được.
+  if (f.run_date.value) {
+    if (!f.run_time.value) { err.textContent = 'Đã chọn ngày thì phải chọn giờ'; return false; }
+    err.textContent = 'đang tạo lịch…';
+
+    // Bảng lịch lưu storyboard dạng TEXT trong DB (sửa được ngay trên UI), nên
+    // nếu người dùng chọn file .md thì phải đọc nội dung ra ở đây.
+    const sb = f.storyboard.files.length ? await f.storyboard.files[0].text() : f.storyboard_text.value;
+    if (!sb.trim()) { err.textContent = 'Thiếu storyboard'; return false; }
+
+    const sd = new FormData();
+    sd.append('name', ((f.brand_sub.value || f.brand.value || 'Bản tin').trim() + (f.date.value ? ' · ' + f.date.value : '')));
+    sd.append('date', f.run_date.value);
+    sd.append('time', f.run_time.value);
+    sd.append('storyboard', sb);
+    sd.append('note', '');
+    sd.append('enabled', 'on');
+    sd.append('audio', f.audio.files[0]);
+    for (const img of f.images.files) sd.append('images', img);
+
+    const r = await fetch('/schedule' + q, { method: 'POST', body: sd });
+    if (!r.ok) { err.textContent = 'không tạo được lịch (HTTP ' + r.status + ')'; return false; }
+    location.href = '/schedule' + q;   // sang thẳng trang Lịch để thấy dòng vừa tạo
+    return false;
+  }
+
   err.textContent = 'đang tải lên…';
   const fd = new FormData();
   fd.append('payload', JSON.stringify({
@@ -418,7 +460,6 @@ for (const tr of document.querySelectorAll('tr.s-active')) {
       </main>`);
   },
 
-  /** Đã lưu nhưng có cảnh báo — hiện ra để người dùng quyết định, không tự chặn. */
   scheduleSaved({ row, check, audioDurationSec }) {
     return page(html`
       ${nav("/schedule")}

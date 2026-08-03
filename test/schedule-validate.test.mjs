@@ -45,7 +45,6 @@ test("cảnh báo khi thiếu ảnh mà storyboard tham chiếu", () => {
 });
 
 test("cảnh báo khi audio dài hơn kịch bản quá nhiều", () => {
-  // 2 dòng ~26 từ  ->  ước tính ~10s. Audio 887s = lệch cực lớn.
   const r = validateScheduleInput({
     storyboardText: SB,
     imageIds: ["image_1", "image_2"],

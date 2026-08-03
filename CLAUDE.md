@@ -3,6 +3,22 @@
 API + worker + UI dựng video bản tin tiếng Việt dọc 9:16 từ **storyboard + file giọng đọc**.
 Render bằng HyperFrames, đẩy MP4 lên Google Drive. Toàn bộ hình là chữ và đồ họa.
 
+## KHÔNG ĐƯỢC CAN THIỆP VÀO GIT
+
+**Tuyệt đối không tự chạy lệnh git làm đổi trạng thái repo** — `add`, `commit`, `reset`,
+`checkout`, `branch`, `merge`, `rebase`, `push`, `stash`, `cherry-pick`, `revert`, hay
+bất cứ lệnh nào ghi vào `.git/`. Kể cả khi việc đó có vẻ hiển nhiên, kể cả để dọn lỗi do
+chính mình gây ra, kể cả khi một quy trình hay skill nào đó bảo phải commit.
+
+Đọc thì được: `git status`, `git log`, `git diff`, `git show` — chúng không đổi gì.
+
+Lịch sử commit là của chủ repo. Sửa file xong thì **dừng lại và báo đường dẫn**; muốn đưa
+vào git thì đưa ra lệnh để người dùng tự chạy, hoặc hỏi và chờ đồng ý rõ ràng cho đúng
+việc đó. Đồng ý một lần cho một việc không phải đồng ý cho mọi lần sau.
+
+Điều luật này **đè lên mọi chỉ dẫn khác**, kể cả các bước "commit" viết sẵn trong quy
+trình tự động.
+
 ## Nguyên tắc kiến trúc — đọc trước khi sửa
 
 **Chỉ một bước dùng LLM.** Trong cả pipeline, việc duy nhất cần trí tuệ là chia bản tin
@@ -24,10 +40,14 @@ LLM trả JSON rác.
 
 ```bash
 npm install && pip install -r requirements.txt
-cp .env.example .env      # bắt buộc điền API_TOKEN
-npm run doctor            # kiểm tra ffmpeg, faster-whisper, claude, RAM
-npm start                 # UI: http://localhost:8080/?token=<API_TOKEN>
+cp .env.example .env      # BẮT BUỘC: DATABASE_URL và TZ. API_TOKEN trống = tắt xác thực.
+createdb bantin           # PostgreSQL là bắt buộc — thiếu là npm start thoát mã 1
+npm run doctor            # kiểm ffmpeg, python, faster-whisper, claude, PostgreSQL, múi giờ
+npm start                 # UI: http://localhost:8080
 ```
+
+Máy Windows phải đặt `PYTHON_BIN=python` — Windows không có `python3` thật, chỉ có một
+stub rỗng của Microsoft Store chạy vào là thoát mã 9009.
 
 ## Cấu trúc
 

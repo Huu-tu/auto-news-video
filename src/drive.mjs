@@ -1,13 +1,3 @@
-// Upload video lên Google Drive bằng OAuth refresh token (tài khoản Gmail cá nhân).
-//
-// VÌ SAO KHÔNG DÙNG SERVICE ACCOUNT: file upload lên sẽ do service account sở
-// hữu, mà service account có hạn mức lưu trữ = 0 → API trả storageQuotaExceeded.
-// Share thư mục không đổi được chủ sở hữu. Với Gmail cá nhân, đường duy nhất là
-// OAuth refresh token của chính bạn (file thuộc về bạn, tính vào 15 GB).
-// Có Google Workspace thì dùng Shared Drive + service account sẽ sạch hơn.
-//
-// Scope dùng drive.file: app chỉ thấy file do chính nó tạo — không đọc được
-// phần còn lại trong Drive của bạn.
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 
@@ -35,14 +25,11 @@ export async function getAccessToken(env = process.env) {
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    // invalid_grant = token bị thu hồi. Hay gặp nhất: OAuth app còn ở trạng thái
-    // "Testing" — Google hết hạn refresh token sau 7 ngày. Publish sang Production.
     throw new Error(`Lấy access token thất bại (${res.status}): ${body.error || ""} ${body.error_description || ""}`.trim());
   }
   return body.access_token;
 }
 
-/** Đọc một lát file thành Buffer. */
 function readChunk(path, start, end) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -53,12 +40,6 @@ function readChunk(path, start, end) {
   });
 }
 
-/**
- * Resumable upload — video 9:16 dưới 10 phút thường 50–300 MB, upload một phát
- * hay đứt giữa chừng. Chia lát 8 MB, lát nào lỗi mạng thì thử lại riêng lát đó.
- *
- * @returns {{ id: string, name: string, webViewLink?: string }}
- */
 export async function uploadToDrive(filePath, { folderId, filename, env = process.env, onProgress = () => {} }) {
   if (!driveConfigured(env)) throw new Error("Thiếu GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN");
 
@@ -66,7 +47,6 @@ export async function uploadToDrive(filePath, { folderId, filename, env = proces
   const size = statSync(filePath).size;
   const name = filename || basename(filePath);
 
-  // 1. Khởi tạo session
   const initRes = await fetch(UPLOAD_URL, {
     method: "POST",
     headers: {
@@ -84,7 +64,6 @@ export async function uploadToDrive(filePath, { folderId, filename, env = proces
   const session = initRes.headers.get("location");
   if (!session) throw new Error("Drive không trả về URL session");
 
-  // 2. Đẩy từng lát
   let offset = 0;
   while (offset < size) {
     const end = Math.min(offset + CHUNK, size) - 1;
@@ -101,7 +80,7 @@ export async function uploadToDrive(filePath, { folderId, filename, env = proces
             "content-range": `bytes ${offset}-${end}/${size}`,
           },
           body: buf,
-          signal: AbortSignal.timeout(120_000), // 8 MB qua đường truyền chậm vẫn kịp
+          signal: AbortSignal.timeout(120_000), 
         });
         break;
       } catch (e) {
@@ -111,7 +90,6 @@ export async function uploadToDrive(filePath, { folderId, filename, env = proces
     }
     if (!res) throw new Error(`Upload lát ${offset}-${end} thất bại: ${lastErr?.message}`);
 
-    // 308 = server đã nhận lát này, gửi tiếp
     if (res.status === 308) {
       const range = res.headers.get("range"); // "bytes=0-8388607"
       offset = range ? Number(range.split("-")[1]) + 1 : end + 1;
