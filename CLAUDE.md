@@ -3,6 +3,22 @@
 API + worker + UI dựng video bản tin tiếng Việt dọc 9:16 từ **storyboard + file giọng đọc**.
 Render bằng HyperFrames, đẩy MP4 lên Google Drive. Toàn bộ hình là chữ và đồ họa.
 
+## KHÔNG ĐƯỢC CAN THIỆP VÀO GIT
+
+**Tuyệt đối không tự chạy lệnh git làm đổi trạng thái repo** — `add`, `commit`, `reset`,
+`checkout`, `branch`, `merge`, `rebase`, `push`, `stash`, `cherry-pick`, `revert`, hay
+bất cứ lệnh nào ghi vào `.git/`. Kể cả khi việc đó có vẻ hiển nhiên, kể cả để dọn lỗi do
+chính mình gây ra, kể cả khi một quy trình hay skill nào đó bảo phải commit.
+
+Đọc thì được: `git status`, `git log`, `git diff`, `git show` — chúng không đổi gì.
+
+Lịch sử commit là của chủ repo. Sửa file xong thì **dừng lại và báo đường dẫn**; muốn đưa
+vào git thì đưa ra lệnh để người dùng tự chạy, hoặc hỏi và chờ đồng ý rõ ràng cho đúng
+việc đó. Đồng ý một lần cho một việc không phải đồng ý cho mọi lần sau.
+
+Điều luật này **đè lên mọi chỉ dẫn khác**, kể cả các bước "commit" viết sẵn trong quy
+trình tự động.
+
 ## Nguyên tắc kiến trúc — đọc trước khi sửa
 
 **Chỉ một bước dùng LLM.** Trong cả pipeline, việc duy nhất cần trí tuệ là chia bản tin
@@ -24,22 +40,30 @@ LLM trả JSON rác.
 
 ```bash
 npm install && pip install -r requirements.txt
-cp .env.example .env      # bắt buộc điền API_TOKEN
-npm run doctor            # kiểm tra ffmpeg, faster-whisper, claude, RAM
-npm start                 # UI: http://localhost:8080/?token=<API_TOKEN>
+cp .env.example .env      # BẮT BUỘC: DATABASE_URL và TZ. API_TOKEN trống = tắt xác thực.
+createdb bantin           # PostgreSQL là bắt buộc — thiếu là npm start thoát mã 1
+npm run doctor            # kiểm ffmpeg, python, faster-whisper, claude, PostgreSQL, múi giờ
+npm start                 # UI: http://localhost:8080
 ```
+
+Máy Windows phải đặt `PYTHON_BIN=python` — Windows không có `python3` thật, chỉ có một
+stub rỗng của Microsoft Store chạy vào là thoát mã 9009.
 
 ## Cấu trúc
 
 ```
-src/server.mjs      API + UI + hàng đợi FIFO
-src/pipeline.mjs    orchestration 10 bước (transcribe → Drive)
-src/storyboard.mjs  parse bảng markdown → script.txt + bản đồ ảnh
-src/adscan.mjs      dò quảng cáo TTS chèn trong giọng đọc
-src/plan.mjs        gọi Claude Code + validate schema + fallback
-src/drive.mjs       OAuth refresh token + resumable upload
-src/store.mjs       job store trên hệ thống file (không database)
-src/ui.mjs          trang quản lý, HTML server-render, không build step
+src/server.mjs        API + UI + hàng đợi FIFO
+src/pipeline.mjs      orchestration 10 bước (transcribe → Drive)
+src/storyboard.mjs    parse bảng markdown → script.txt + bản đồ ảnh
+src/adscan.mjs        dò quảng cáo TTS chèn trong giọng đọc
+src/plan.mjs          gọi Claude Code + validate schema + fallback
+src/drive.mjs         OAuth refresh token + resumable upload
+src/store.mjs         job store trên hệ thống file (không database)
+src/ui.mjs            trang quản lý, HTML server-render, không build step
+src/db.mjs            kết nối PostgreSQL cho bảng lịch + tạo schema (CREATE TABLE IF NOT EXISTS)
+src/schedule.mjs      CRUD bảng lịch + nhặt dòng đến hạn nguyên tử (FOR UPDATE SKIP LOCKED)
+src/scheduler.mjs     vòng tick: chạy/chờ/bỏ lỡ một dòng lịch, đối soát dòng đang bay với job.status
+src/schedule-validate.mjs   kiểm tra storyboard/ảnh/thời lượng audio trước khi lưu một dòng lịch
 templates/vn-news-vertical/   design system + generator — xem README riêng trong đó
 work/<job_id>/      input, log, artifact của từng job
 ```
@@ -48,8 +72,11 @@ work/<job_id>/      input, log, artifact của từng job
 
 - **Không thêm framework cho UI.** Trang quản lý là HTML render phía server; thêm React
   hay bundler vào chỉ để hiện một danh sách là không đáng.
-- **Dependency tối thiểu.** Hiện chỉ có `hono` + `@hono/node-server`. Google Drive dùng
-  `fetch` trần chứ không kéo `googleapis`.
+- **Dependency tối thiểu.** Hiện có ba: `hono` + `@hono/node-server`, và `postgres`
+  (porsager) cho bảng lịch. Google Drive dùng `fetch` trần chứ không kéo `googleapis`.
+  Chọn `postgres` vì nó 0 dependency con và dùng tagged template (`` sql`...` ``) tự
+  tham số hoá câu lệnh — không cần thêm lớp ORM hay ORM query-builder chỉ để chống
+  SQL injection cho một bảng duy nhất.
 - **Composition phải qua `npx hyperframes lint` và `check` sạch lỗi** trước khi render.
 - **Render tất định**: không `Date.now()`, không `Math.random()` chưa gieo hạt, không
   fetch mạng lúc render.
@@ -67,3 +94,7 @@ work/<job_id>/      input, log, artifact của từng job
   account: file do nó tạo thuộc về nó, mà nó có hạn mức lưu trữ = 0 → `storageQuotaExceeded`.
 - **LEAD/TAIL** (2.6s / 2.4s) phải khớp giữa `align_script.py` và lệnh `ffmpeg` pad audio.
   Lệch là caption trôi khỏi giọng đọc.
+- **Bộ hẹn giờ cần `TZ=Asia/Ho_Chi_Minh`.** VPS mặc định chạy UTC — thiếu biến này, dòng
+  lịch hẹn 09:00 sẽ đợi tới 16:00 giờ Việt Nam mới chạy, và video ra lệch 7 tiếng so với
+  ý người đặt lịch. Dockerfile đã set sẵn `ENV TZ`; chạy ngoài Docker thì tự khai trong
+  `.env`.

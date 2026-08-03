@@ -1,12 +1,9 @@
-// Job store — hệ thống file, không database.
-// Mỗi job là một thư mục work/<job_id>/ tự mô tả: xoá thư mục = xoá job.
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const WORK_DIR = resolve(process.env.WORK_DIR || "./work");
 
-/** Trạng thái không phải điểm cuối — job đang chạy dở. */
 export const ACTIVE = ["queued", "transcribing", "ad_scan", "aligning", "planning", "building", "checking", "rendering", "uploading"];
 const TERMINAL = ["done", "failed", "cancelled"];
 
@@ -16,6 +13,10 @@ export function isTerminal(status) {
 
 export function jobDir(id) {
   return join(WORK_DIR, id);
+}
+
+export function scheduleDir(id) {
+  return join(WORK_DIR, "schedule", String(id));
 }
 
 export function newJobId() {
@@ -28,7 +29,6 @@ export function initStore() {
   mkdirSync(join(WORK_DIR, "_idem"), { recursive: true });
 }
 
-/** Ghi status.json kiểu atomic — đọc song song không bao giờ thấy file nửa vời. */
 export function writeStatus(id, status) {
   const dir = jobDir(id);
   mkdirSync(dir, { recursive: true });
@@ -70,7 +70,6 @@ export function log(id, line) {
   try {
     appendFileSync(join(jobDir(id), "logs.ndjson"), JSON.stringify(rec) + "\n");
   } catch {
-    /* log không bao giờ được làm job chết */
   }
 }
 
@@ -101,8 +100,6 @@ export function listJobs({ status, limit = 100 } = {}) {
   return out.slice(0, limit);
 }
 
-// ── Idempotency ──────────────────────────────────────────────────────────────
-// Client retry với cùng Idempotency-Key sẽ nhận lại job cũ thay vì tạo job trùng.
 const idemPath = (key) => join(WORK_DIR, "_idem", createHash("sha256").update(key).digest("hex").slice(0, 32) + ".json");
 
 export function lookupIdempotency(key) {
@@ -119,11 +116,6 @@ export function saveIdempotency(key, jobId) {
   writeFileSync(idemPath(key), JSON.stringify({ key, job_id: jobId, at: new Date().toISOString() }));
 }
 
-/**
- * Job đang ở trạng thái ACTIVE khi tiến trình khởi động lại = job bị cắt ngang.
- * Đánh dấu failed thay vì để nó treo mãi ở "rendering" — im lặng trông y hệt
- * đang chạy, đó là kiểu lỗi tệ nhất trong một pipeline không có callback.
- */
 export function reapInterrupted() {
   let n = 0;
   for (const s of listJobs({ limit: 10000 })) {

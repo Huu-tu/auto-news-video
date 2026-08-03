@@ -8,9 +8,13 @@ __pycache__/
 .venv/
 venv/
 
+# ── Dữ liệu chạy ─────────────────────────────────────────────────────────────
+work/*
+!work/.gitkeep
+
 # ── Linh tinh ────────────────────────────────────────────────────────────────
 *.log
 .DS_Store
 
-# Playwright MCP scratch
 .playwright-mcp/
+.superpowers/
