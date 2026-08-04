@@ -24,7 +24,7 @@ import {
   writeStatus,
 } from "./store.mjs";
 import { getSql, initSchema } from "./db.mjs";
-import { validateScheduleInput } from "./schedule-validate.mjs";
+import { validateRunAt, validateScheduleInput } from "./schedule-validate.mjs";
 import { brandFromParams, parseStoryboard } from "./storyboard.mjs";
 import { claimById, createRow, deleteRow, getRow, listRows, markRow, setEnabled, updateRow } from "./schedule.mjs";
 import { lastTick, startScheduler } from "./scheduler.mjs";
@@ -101,7 +101,7 @@ async function pump() {
       }, 10_000);
 
       await job.catch(() => {});
-      clearTimeout(killTimer); // child chết sạch rồi thì đừng giữ timer 10s treo
+      clearTimeout(killTimer); 
 
       try {
         const cur = readStatus(jobId);
@@ -382,25 +382,41 @@ app.get("/v1/jobs/:id/events", (c) => {
   const id = c.req.param("id");
   if (!readStatus(id)) return c.json({ error: { code: "not_found" } }, 404);
 
+  let timer = null;
+  let closed = false;
+  const stop = () => {
+    closed = true;
+    if (timer) clearInterval(timer);
+    timer = null;
+  };
+
   const stream = new ReadableStream({
     start(controller) {
       const enc = new TextEncoder();
       let last = "";
       const tick = () => {
+        if (closed) return;
         const s = readStatus(id);
         if (!s) return;
         const json = JSON.stringify(s);
-        if (json !== last) {
-          last = json;
-          controller.enqueue(enc.encode(`data: ${json}\n\n`));
-        }
-        if (isTerminal(s.status)) {
-          clearInterval(timer);
-          controller.close();
+        try {
+          if (json !== last) {
+            last = json;
+            controller.enqueue(enc.encode(`data: ${json}\n\n`));
+          }
+          if (isTerminal(s.status)) {
+            stop();
+            controller.close();
+          }
+        } catch {
+          stop(); 
         }
       };
-      const timer = setInterval(tick, 1500);
+      timer = setInterval(tick, 1500);
       tick();
+    },
+    cancel() {
+      stop();
     },
   });
 
@@ -479,9 +495,8 @@ app.post("/schedule", async (c) => {
 
   const timeNorm = /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
   const runAt = new Date(`${date}T${timeNorm}`);
-  if (Number.isNaN(runAt.getTime())) {
-    return c.html(renderPage.scheduleError("Ngày giờ không hợp lệ"), 400);
-  }
+  const runAtError = validateRunAt(runAt);
+  if (runAtError) return c.html(renderPage.scheduleError(runAtError), 400);
 
   const files = [];
   for (const [k, v] of Object.entries(body)) {
@@ -576,7 +591,8 @@ app.post("/schedule/:id/edit", async (c) => {
 
   const timeNorm = /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
   const runAt = new Date(`${date}T${timeNorm}`);
-  if (Number.isNaN(runAt.getTime())) return c.html(renderPage.scheduleError("Ngày giờ không hợp lệ"), 400);
+  const runAtError = validateRunAt(runAt);
+  if (runAtError) return c.html(renderPage.scheduleError(runAtError), 400);
 
   const check = validateScheduleInput({ storyboardText: storyboard, imageIds: [], audioDurationSec: 0 });
   if (!check.ok) return c.html(renderPage.scheduleError(check.errors.join(" · ")), 400);
@@ -596,7 +612,7 @@ app.post("/schedule/:id/run", async (c) => {
   if (id === null) return c.redirect("/schedule", 303);
 
   const row = await claimById(sql, id);
-  if (!row) return c.redirect("/schedule", 303); // không tồn tại, hoặc đang bay
+  if (!row) return c.redirect("/schedule", 303); 
 
   try {
     const jobId = await createJobFromSchedule(row);

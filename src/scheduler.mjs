@@ -3,6 +3,16 @@ import { readStatus } from "./store.mjs";
 
 export const RETRYABLE_CODES = new Set(["interrupted", "render_failed", "internal_error"]);
 
+export function humanizeMs(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s} giây`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} phút`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} tiếng`;
+  return `${Math.round(h / 24)} ngày`;
+}
+
 export function decideAction({ now, runAt, enabled, status, graceMs }) {
   if (!enabled) return "wait";
   if (status !== "pending") return "wait";
@@ -143,17 +153,16 @@ export async function tick({ sql, now = new Date(), enqueueJob, log = () => {}, 
       });
 
       if (action === "miss") {
-        log(`lịch #${row.id} "${row.name}": BỎ LỠ — trễ quá ngưỡng`);
+        const lateFor = humanizeMs(now.getTime() - new Date(row.run_at).getTime());
+        const reason = `Trễ ${lateFor} so với giờ hẹn (ngưỡng ${cfg.graceMs / 3600000} tiếng)`;
+        log(`lịch #${row.id} "${row.name}": BỎ LỠ — ${reason}`);
         void alertWebhook({
           event: "schedule_missed",
           schedule_id: row.id, name: row.name,
           run_at: row.run_at,
-          message: `Bỏ lỡ lịch "${row.name}" — trễ quá ${cfg.graceMs / 3600000} tiếng`,
+          message: `Bỏ lỡ lịch "${row.name}" — ${reason}`,
         });
-        await markRow(sql, row.id, {
-          status: "missed",
-          last_error: `Trễ quá ${cfg.graceMs / 3600000} tiếng so với giờ hẹn`,
-        });
+        await markRow(sql, row.id, { status: "missed", last_error: reason });
         continue;
       }
 

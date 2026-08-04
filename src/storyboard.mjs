@@ -64,7 +64,7 @@ export function parseStoryboard(md) {
         image: findCol(header, "hình ảnh", "hinh anh", "image"),
         note: findCol(header, "ghi chú", "ghi chu", "note"),
       };
-      if (cols.text < 0) header = null; // không phải bảng kịch bản, thử bảng sau
+      if (cols.text < 0) header = null; 
       continue;
     }
 
@@ -87,19 +87,33 @@ export function toScriptText(rows) {
   return rows.map((r) => r.text.replace(/\s+/g, " ").trim()).join("\n") + "\n";
 }
 
+const IMAGE_FILE = /([\w.\-]+)\.(png|jpe?g|webp|gif|avif)\b/i;
+
 export function imageIdFromRef(ref) {
   if (!ref) return null;
-  const base = ref.split(/[\\/]/).pop() || ref;
-  const noExt = base.replace(/\.[a-z0-9]+$/i, "");
-  const id = noExt.trim();
-  return id && !/^(cut|zoom|fade|giữ hình|text overlay)/i.test(id) ? id : null;
+  const m = String(ref).match(IMAGE_FILE);
+  if (!m) return null;
+  const id = m[1].split(/[\\/]/).pop().trim();
+  return id || null;
+}
+
+const PLACEHOLDER = /(để trống|điền theo|điền vào|tùy bạn|tuỳ bạn|ví dụ|nếu muốn|theo ngày bạn)/i;
+
+function usable(s, maxLen) {
+  const v = String(s || "").trim();
+  if (!v || v.length > maxLen || PLACEHOLDER.test(v)) return "";
+  return v;
 }
 
 export function brandFromParams(params = {}) {
   const clean = (s) => String(s || "").split("—")[0].trim();
 
-  const [name, sub] = clean(params["thương hiệu"]).split("·").map((s) => s.trim());
-  const date = clean(params["ngày ghi trên thanh trên cùng (topbar)"] || params["ngày"]);
+  const [rawName, rawSub] = clean(params["thương hiệu"]).split("·").map((s) => s.trim());
+  const date = usable(clean(params["ngày ghi trên thanh trên cùng (topbar)"] || params["ngày"]), 24);
 
-  return { name: name || "BẢN TIN", sub: sub || "TỔNG HỢP", date: date || "" };
+  return {
+    name: usable(rawName, 24) || "BẢN TIN",
+    sub: usable(rawSub, 24) || "TỔNG HỢP",
+    date,
+  };
 }

@@ -24,7 +24,6 @@ const PYTHON = process.env.PYTHON_BIN || "python3";
 
 class JobCancelled extends Error {}
 
-/** Chạy lệnh, stream log vào job, ném lỗi kèm đuôi stderr nếu exit != 0. */
 function run(jobId, cmd, args, opts = {}) {
   return new Promise((resolvePromise, reject) => {
     log(jobId, `$ ${cmd} ${args.join(" ")}`);
@@ -75,13 +74,10 @@ async function alert(jobId, error) {
       signal: AbortSignal.timeout(10_000),
     });
   } catch {
-    /* chuông báo cháy hỏng thì cũng không được làm job hỏng theo */
   }
 }
 
 export function cleanupAfterUpload(dir, onLog = () => {}) {
-  // Hàm này xoá đệ quy. Không tin caller: nếu dir không nằm dưới WORK_DIR thì
-  // dừng ngay. Rẻ hơn nhiều so với việc khôi phục một thư mục bị xoá nhầm.
   const abs = resolve(dir || "");
   if (!abs.startsWith(resolve(WORK_DIR) + sep)) {
     onLog(`từ chối dọn "${dir}" — nằm ngoài WORK_DIR`);
@@ -146,12 +142,17 @@ export async function runJob(jobId, { registerChild } = {}) {
 
     const imgDir = join(inputDir, "images");
     const images = existsSync(imgDir)
-      ? readdirSync(imgDir).map((f) => ({
-          id: f.replace(/\.[a-z0-9]+$/i, ""),
-          relPath: join("input", "images", f),
-        }))
+      ? readdirSync(imgDir).map((f) => {
+          const id = f.replace(/\.[a-z0-9]+$/i, "");
+          const line = rows.findIndex((r) => imageIdFromRef(r.image) === id);
+          return { id, relPath: join("input", "images", f), line: line >= 0 ? line : null };
+        })
       : [];
-    log(jobId, `ảnh: ${images.length}`);
+    const placed = images.filter((im) => im.line !== null).length;
+    log(jobId, `ảnh: ${images.length}${images.length ? ` (${placed} khớp dòng kịch bản)` : ""}`);
+    for (const im of images.filter((i) => i.line === null)) {
+      addWarning(jobId, "image_unreferenced", `Ảnh "${im.id}" không được dòng nào trong storyboard nhắc tới — LLM tự chọn chỗ đặt`);
+    }
 
     checkCancelled(jobId);
     const rawAudio = readdirSync(inputDir).find((f) => /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f));
@@ -267,7 +268,7 @@ export async function runJob(jobId, { registerChild } = {}) {
         "--date", brand.date || "",
         ...(opts.fps ? ["--fps", String(opts.fps)] : []),
       ],
-      { cwd: dir, register: registerChild }, // CWD = thư mục job, vì img trong chapters là đường dẫn tương đối
+      { cwd: dir, register: registerChild }, 
     );
     mark("building", step);
 
@@ -300,7 +301,6 @@ export async function runJob(jobId, { registerChild } = {}) {
           cwd: projDir,
           register: registerChild,
           onLine: (s) => {
-            // CLI in tiến độ dạng "frame 8420/13590"
             const m = s.match(/(\d+)\s*\/\s*(\d+)/);
             if (m) {
               const p = Number(m[1]) / Number(m[2]);

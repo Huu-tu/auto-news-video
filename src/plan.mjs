@@ -94,8 +94,17 @@ function buildPrompt({ rows, brand, images, errors = [] }) {
     : "";
   const script = rows.map((r, i) => `${i}: ${r.text}`).join("\n");
   const imgList = images.length
-    ? images.map((im) => `- id "${im.id}" → dùng "img": "${im.relPath}"`).join("\n")
-    : "(không có ảnh — tuyệt đối không dùng kind \"image\")";
+    ? [
+        ...images.map((im) =>
+          im.line !== null
+            ? `- "img": "${im.relPath}"  → đặt ở dòng ${im.line}`
+            : `- "img": "${im.relPath}"  → chưa gắn dòng nào, tự chọn dòng hợp nội dung nhất`,
+        ),
+        "",
+        `BẮT BUỘC: dùng hết ${images.length} ảnh trên, mỗi ảnh đúng một cảnh "kind": "image".`,
+        'Chép nguyên văn đường dẫn vào field "img". Không bỏ sót ảnh nào.',
+      ].join("\n")
+    : '(không có ảnh — tuyệt đối không dùng kind "image")';
 
   return `Bạn đang soạn bản đồ cảnh cho một video bản tin tiếng Việt dọc 9:16.
 

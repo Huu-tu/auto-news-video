@@ -1,7 +1,20 @@
 import { imageIdFromRef, parseStoryboard } from "./storyboard.mjs";
 
 const SYLLABLES_PER_MIN = 150;
-const DURATION_TOLERANCE = 0.3; // lệch quá 30% thì cảnh báo
+const DURATION_TOLERANCE = 0.3; 
+
+const SKEW_MS = 60_000;
+
+export function validateRunAt(runAt, now = new Date()) {
+  if (!(runAt instanceof Date) || Number.isNaN(runAt.getTime())) return "Ngày giờ không hợp lệ";
+  const late = now.getTime() - runAt.getTime();
+  if (late <= SKEW_MS) return null;
+
+  const mins = Math.round(late / 60000);
+  const when =
+    mins < 60 ? `${mins} phút` : mins < 2880 ? `${Math.round(mins / 60)} tiếng` : `${Math.round(mins / 1440)} ngày`;
+  return `Giờ hẹn đã qua ${when} trước — chọn thời điểm trong tương lai, hoặc dùng "Chạy ngay" nếu muốn dựng luôn`;
+}
 
 export function validateScheduleInput({ storyboardText, imageIds = [], audioDurationSec = 0 }) {
   const errors = [];
