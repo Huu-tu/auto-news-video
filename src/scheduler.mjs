@@ -70,7 +70,7 @@ async function reconcileRow(sql, row, cfg, log) {
     await resetToPending(sql, row.id);
     return;
   }
-  const job = readStatus(row.job_id);
+  const job = await readStatus(row.job_id);
 
   if (!job) {
     log(`lịch #${row.id}: không thấy job ${row.job_id}, trả về pending`);

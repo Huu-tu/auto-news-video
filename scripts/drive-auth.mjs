@@ -1,13 +1,3 @@
-#!/usr/bin/env node
-// Lấy GOOGLE_REFRESH_TOKEN một lần cho tài khoản Gmail cá nhân.
-//
-// Chuẩn bị trên console.cloud.google.com:
-//   1. Tạo project → bật "Google Drive API"
-//   2. OAuth consent screen → External → thêm chính email của bạn vào Test users
-//      → SAU ĐÓ BẤM "PUBLISH APP" sang Production. Nếu để ở Testing, Google sẽ
-//      thu hồi refresh token sau 7 ngày và pipeline sẽ chết lặng lẽ.
-//   3. Credentials → Create OAuth client ID → loại "Desktop app"
-//   4. Chạy: GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... node scripts/drive-auth.mjs
 import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-// Kiểm tra máy đã đủ điều kiện chạy pipeline chưa. Chạy sau khi deploy VPS.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
@@ -35,25 +33,13 @@ for (const [cmd, label] of [["ffmpeg", "ffmpeg"], ["ffprobe", "ffprobe"], [PYTHO
   v ? ok(`${label}: ${v.slice(0, 60)}`) : bad(`${label} không có trên PATH`);
 }
 
-// `claude --version` chạy được KỂ CẢ khi chưa xác thực — nên nó không chứng
-// minh được gì. Phải gọi thật một lần mới biết.
 const claudeBin = process.env.CLAUDE_BIN || "claude";
 const claudeVer = await has(claudeBin);
 if (!claudeVer) {
   warn(`${claudeBin} không có trên PATH — pipeline sẽ luôn dùng bố cục fallback`);
 } else {
   try {
-    // Phải nối CLAUDE_EXTRA_ARGS giống hệt src/plan.mjs: một số VPS vẫn hiện
-    // prompt xin quyền dù bước này chỉ sinh văn bản, và cờ đó nằm ở đây để
-    // khỏi treo. Doctor không đọc biến này thì sẽ treo hết 60s rồi báo nhầm
-    // là lỗi ANTHROPIC_API_KEY, trong khi vấn đề thật là thiếu cờ.
     const extra = (process.env.CLAUDE_EXTRA_ARGS || "").split(/\s+/).filter(Boolean);
-    // --model haiku: prompt chỉ cần trả về [1,2,3] để chứng minh đã xác thực,
-    // không cần model đắt tiền. Doctor bị chạy nhiều lần lúc dựng máy — ghim
-    // model rẻ để không ai ngại chạy nó.
-    // execFile (và promisify của nó) không có option `input` — đó là của
-    // execFileSync/spawnSync. Bản async phải tự ghi vào stdin của child. Node
-    // gắn ChildProcess vào promise đã promisify hoá qua thuộc tính `.child`.
     const call = pexec(claudeBin, ["-p", "--output-format", "json", "--model", "haiku", ...extra], {
       timeout: 60000,
     });
@@ -76,9 +62,6 @@ try {
 }
 
 console.log("\nCấu hình:");
-// Trống không còn là lỗi chặn (server vẫn chạy, chỉ là không xác thực) nhưng
-// vẫn phải kêu to: đây là trạng thái tạm chờ tính năng đăng nhập, không phải
-// cấu hình bình thường để đem lên server công khai.
 process.env.API_TOKEN
   ? ok("API_TOKEN")
   : warn("API_TOKEN trống — KHÔNG XÁC THỰC, ai vào được cổng cũng toàn quyền. Chỉ dùng ở máy cá nhân hoặc sau VPN.");
@@ -106,12 +89,6 @@ if (process.env.DATABASE_URL) {
   bad("DATABASE_URL trống — bảng lịch sẽ không chạy");
 }
 
-// Múi giờ sai là bẫy kinh điển: VPS mặc định UTC, hẹn 09:00 thì video ra lúc 16:00.
-//
-// So ĐỘ LỆCH chứ không so tên vùng. `Asia/Ho_Chi_Minh` và `Asia/Saigon` là cùng
-// một múi giờ — bộ dữ liệu ICU trên một số máy (Windows chẳng hạn) trả về tên
-// cũ "Asia/Saigon" dù .env khai tên mới. So tên sẽ báo oan, mà một công cụ chẩn
-// đoán kêu oan thì lần sau người ta bỏ qua nó, kể cả lúc nó báo đúng.
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const offsetHours = -new Date().getTimezoneOffset() / 60;
 const nowLocal = new Date().toLocaleString("vi-VN");

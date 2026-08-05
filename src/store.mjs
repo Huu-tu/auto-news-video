@@ -1,11 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+
+import { getSql } from "./db.mjs";
 
 export const WORK_DIR = resolve(process.env.WORK_DIR || "./work");
 
 export const ACTIVE = ["queued", "transcribing", "ad_scan", "aligning", "planning", "building", "checking", "rendering", "uploading"];
 const TERMINAL = ["done", "failed", "cancelled"];
+
+const COLUMNS = ["job_id", "status", "created_at", "started_at", "updated_at"];
 
 export function isTerminal(status) {
   return TERMINAL.includes(status);
@@ -33,7 +37,7 @@ export function clearScheduleInput(id) {
     walk(dir);
     rmSync(dir, { recursive: true, force: true });
   } catch {
-    return 0; 
+    return 0;
   }
   return freed;
 }
@@ -51,48 +55,98 @@ export function newJobId() {
 
 export function initStore() {
   mkdirSync(WORK_DIR, { recursive: true });
-  mkdirSync(join(WORK_DIR, "_idem"), { recursive: true });
 }
 
-export function writeStatus(id, status) {
-  const dir = jobDir(id);
-  mkdirSync(dir, { recursive: true });
-  const tmp = join(dir, `.status.${process.pid}.tmp`);
-  writeFileSync(tmp, JSON.stringify(status, null, 2) + "\n");
-  renameSync(tmp, join(dir, "status.json"));
+const iso = (v) => (v instanceof Date ? v.toISOString() : v ?? null);
+
+function rowToStatus(row) {
+  if (!row) return null;
+  return {
+    ...row.data,
+    job_id: row.job_id,
+    status: row.status,
+    created_at: iso(row.created_at),
+    started_at: iso(row.started_at),
+    updated_at: iso(row.updated_at),
+    queue_position: row.queue_position ?? null,
+  };
 }
 
-export function readStatus(id) {
-  const p = join(jobDir(id), "status.json");
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
+
+function splitStatus(status) {
+  const data = { ...status };
+  for (const c of COLUMNS) delete data[c];
+  return data;
 }
 
-export function patchStatus(id, patch) {
-  const cur = readStatus(id);
+export async function writeStatus(id, status, sql = getSql()) {
+  const data = splitStatus(status);
+  const [row] = await sql`
+    INSERT INTO job (job_id, status, created_at, started_at, updated_at, data)
+    VALUES (
+      ${id},
+      ${status.status},
+      ${status.created_at ? new Date(status.created_at) : new Date()},
+      ${status.started_at ? new Date(status.started_at) : null},
+      ${new Date()},
+      ${sql.json(data)}
+    )
+    ON CONFLICT (job_id) DO UPDATE SET
+      status     = EXCLUDED.status,
+      started_at = EXCLUDED.started_at,
+      updated_at = EXCLUDED.updated_at,
+      data       = EXCLUDED.data
+    RETURNING *`;
+  mkdirSync(jobDir(id), { recursive: true });
+  return rowToStatus(row);
+}
+
+export async function readStatus(id, sql = getSql()) {
+  const [row] = await sql`
+    SELECT j.*, q.n AS queue_position
+      FROM job j
+      LEFT JOIN (
+        SELECT job_id, row_number() OVER (ORDER BY created_at, job_id)::int n
+          FROM job WHERE status = 'queued'
+      ) q ON q.job_id = j.job_id
+     WHERE j.job_id = ${id}`;
+  return rowToStatus(row);
+}
+
+export async function patchStatus(id, patch, sql = getSql()) {
+  const cur = await readStatus(id, sql);
   if (!cur) return null;
-  const next = { ...cur, ...patch, updated_at: new Date().toISOString() };
-  writeStatus(id, next);
-  return next;
+  return writeStatus(id, { ...cur, ...patch }, sql);
 }
 
-export function setStage(id, name, progress = null, detail = null) {
-  return patchStatus(id, { status: name, stage: { name, progress, detail } });
+export async function setStage(id, name, progress = null, detail = null, sql = getSql()) {
+  return patchStatus(id, { status: name, stage: { name, progress, detail } }, sql);
 }
 
-export function addWarning(id, code, message) {
-  const cur = readStatus(id);
-  if (!cur) return;
-  patchStatus(id, { warnings: [...(cur.warnings || []), { code, message }] });
+export async function addWarning(id, code, message, sql = getSql()) {
+  const cur = await readStatus(id, sql);
+  if (!cur) return null;
+  return patchStatus(id, { warnings: [...(cur.warnings || []), { code, message }] }, sql);
+}
+
+export async function listJobs({ status, limit = 100 } = {}, sql = getSql()) {
+  const rows = await sql`
+    SELECT j.*, q.n AS queue_position
+      FROM job j
+      LEFT JOIN (
+        SELECT job_id, row_number() OVER (ORDER BY created_at, job_id)::int n
+          FROM job WHERE status = 'queued'
+      ) q ON q.job_id = j.job_id
+     ${status ? sql`WHERE j.status = ${status}` : sql``}
+     ORDER BY j.created_at DESC
+     LIMIT ${limit}`;
+  return rows.map(rowToStatus);
 }
 
 export function log(id, line) {
   const rec = { t: new Date().toISOString(), line: String(line).replace(/\s+$/, "") };
   try {
+    mkdirSync(jobDir(id), { recursive: true });
     appendFileSync(join(jobDir(id), "logs.ndjson"), JSON.stringify(rec) + "\n");
   } catch {
   }
@@ -111,48 +165,73 @@ export function readLogs(id, limit = 500) {
   });
 }
 
-export function listJobs({ status, limit = 100 } = {}) {
-  if (!existsSync(WORK_DIR)) return [];
-  const out = [];
-  for (const name of readdirSync(WORK_DIR)) {
-    if (!name.startsWith("job_")) continue;
-    const s = readStatus(name);
-    if (!s) continue;
-    if (status && s.status !== status) continue;
-    out.push(s);
-  }
-  out.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  return out.slice(0, limit);
+const idemKey = (key) => createHash("sha256").update(key).digest("hex").slice(0, 32);
+
+export async function lookupIdempotency(key, sql = getSql()) {
+  const [row] = await sql`SELECT job_id FROM job_idempotency WHERE key = ${idemKey(key)}`;
+  return row?.job_id ?? null;
 }
 
-const idemPath = (key) => join(WORK_DIR, "_idem", createHash("sha256").update(key).digest("hex").slice(0, 32) + ".json");
-
-export function lookupIdempotency(key) {
-  const p = idemPath(key);
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, "utf8")).job_id;
-  } catch {
-    return null;
-  }
+export async function saveIdempotency(key, jobId, sql = getSql()) {
+  await sql`
+    INSERT INTO job_idempotency (key, job_id) VALUES (${idemKey(key)}, ${jobId})
+    ON CONFLICT (key) DO NOTHING`;
 }
 
-export function saveIdempotency(key, jobId) {
-  writeFileSync(idemPath(key), JSON.stringify({ key, job_id: jobId, at: new Date().toISOString() }));
+export async function requeueUnstarted(sql = getSql()) {
+  const rows = await sql`
+    UPDATE job
+       SET status = 'queued', updated_at = now()
+     WHERE status <> 'queued'
+       AND started_at IS NULL
+       AND NOT (status = ANY(${TERMINAL}))
+     RETURNING job_id`;
+  return rows.length;
 }
 
-export function reapInterrupted() {
-  let n = 0;
-  for (const s of listJobs({ limit: 10000 })) {
-    if (isTerminal(s.status)) continue;
-    writeStatus(s.job_id, {
-      ...s,
-      status: "failed",
-      stage: { name: "failed", progress: null, detail: null },
-      error: { code: "interrupted", stage: s.status, message: "Tiến trình khởi động lại khi job đang chạy", retryable: true },
-      updated_at: new Date().toISOString(),
-    });
-    n++;
-  }
-  return n;
+export async function reapInterrupted(sql = getSql()) {
+  const rows = await sql`
+    UPDATE job
+       SET status = 'failed',
+           updated_at = now(),
+           data = data
+             || jsonb_build_object('stage', jsonb_build_object('name','failed','progress',null,'detail',null))
+             || jsonb_build_object('error', jsonb_build_object(
+                  'code','interrupted',
+                  'stage', COALESCE(data->'stage'->>'name', status),
+                  'message','Tiến trình khởi động lại khi job đang chạy',
+                  'retryable', true))
+     WHERE started_at IS NOT NULL
+       AND NOT (status = ANY(${TERMINAL}))
+     RETURNING job_id`;
+  return rows.length;
+}
+
+export async function claimNextQueued(sql = getSql()) {
+  const [row] = await sql`
+    UPDATE job
+       SET status = 'claimed', started_at = now(), updated_at = now()
+     WHERE job_id = (
+       SELECT job_id FROM job
+        WHERE status = 'queued'
+        ORDER BY created_at, job_id
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+     )
+     RETURNING *`;
+  return rowToStatus(row);
+}
+
+export async function countQueued(sql = getSql()) {
+  const [row] = await sql`SELECT count(*)::int n FROM job WHERE status = 'queued'`;
+  return row.n;
+}
+
+export async function queuePosition(id, sql = getSql()) {
+  const [row] = await sql`
+    SELECT n FROM (
+      SELECT job_id, row_number() OVER (ORDER BY created_at, job_id)::int n
+        FROM job WHERE status = 'queued'
+    ) t WHERE job_id = ${id}`;
+  return row?.n ?? null;
 }

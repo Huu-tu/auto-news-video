@@ -45,4 +45,28 @@ export async function initSchema(client = getSql()) {
   await client`
     CREATE INDEX IF NOT EXISTS schedule_due_idx
       ON schedule (run_at) WHERE enabled AND status = 'pending'`;
+
+  await client`
+    CREATE TABLE IF NOT EXISTS job (
+      job_id      text        PRIMARY KEY,
+      status      text        NOT NULL,
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      started_at  timestamptz,
+      updated_at  timestamptz NOT NULL DEFAULT now(),
+      data        jsonb       NOT NULL DEFAULT '{}'::jsonb
+    )`;
+
+  await client`
+    CREATE INDEX IF NOT EXISTS job_queue_idx
+      ON job (created_at) WHERE status = 'queued'`;
+
+  await client`
+    CREATE INDEX IF NOT EXISTS job_created_idx ON job (created_at DESC)`;
+
+  await client`
+    CREATE TABLE IF NOT EXISTS job_idempotency (
+      key         text        PRIMARY KEY,
+      job_id      text        NOT NULL,
+      created_at  timestamptz NOT NULL DEFAULT now()
+    )`;
 }

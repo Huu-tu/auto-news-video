@@ -50,13 +50,23 @@ function run(jobId, cmd, args, opts = {}) {
   });
 }
 
-function checkCancelled(jobId) {
-  const s = readStatus(jobId);
+async function checkCancelled(jobId) {
+  const s = await readStatus(jobId);
   if (s?.cancel_requested) throw new JobCancelled("Job bị huỷ theo yêu cầu");
 }
 
-function fail(jobId, code, stage, message, retryable = false) {
-  patchStatus(jobId, {
+function progressReporter(jobId, minGapMs = 1000) {
+  let last = 0;
+  return (name, progress, detail) => {
+    const now = Date.now();
+    if (now - last < minGapMs) return;
+    last = now;
+    setStage(jobId, name, progress, detail).catch((e) => log(jobId, `không ghi được tiến độ: ${e.message}`));
+  };
+}
+
+async function fail(jobId, code, stage, message, retryable = false) {
+  await patchStatus(jobId, {
     status: "failed",
     stage: { name: "failed", progress: null, detail: null },
     error: { code, stage, message: String(message).slice(0, 2000), retryable },
@@ -118,8 +128,9 @@ export async function runJob(jobId, { registerChild } = {}) {
   const t0 = Date.now();
   const timings = {};
   const mark = (name, since) => (timings[name] = Math.round((Date.now() - since) / 1000));
+  const reportProgress = progressReporter(jobId);
 
-  const status = readStatus(jobId);
+  const status = await readStatus(jobId);
   const opts = status.options || {};
   const brand = status.brand || {};
   const tpl = join(TEMPLATES_DIR, status.template || "vn-news-vertical");
@@ -128,7 +139,7 @@ export async function runJob(jobId, { registerChild } = {}) {
     mkdirSync(projDir, { recursive: true });
 
     let step = Date.now();
-    setStage(jobId, "transcribing", 0, "chuẩn bị input");
+    await setStage(jobId, "transcribing", 0, "chuẩn bị input");
     const sbPath = join(inputDir, "storyboard.md");
     if (!existsSync(sbPath)) throw Object.assign(new Error("Thiếu storyboard"), { code: "bad_input" });
 
@@ -152,10 +163,10 @@ export async function runJob(jobId, { registerChild } = {}) {
     const placed = images.filter((im) => im.line !== null).length;
     log(jobId, `ảnh: ${images.length}${images.length ? ` (${placed} khớp dòng kịch bản)` : ""}`);
     for (const im of images.filter((i) => i.line === null)) {
-      addWarning(jobId, "image_unreferenced", `Ảnh "${im.id}" không được dòng nào trong storyboard nhắc tới — LLM tự chọn chỗ đặt`);
+      await addWarning(jobId, "image_unreferenced", `Ảnh "${im.id}" không được dòng nào trong storyboard nhắc tới — LLM tự chọn chỗ đặt`);
     }
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     const rawAudio = readdirSync(inputDir).find((f) => /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f));
     if (!rawAudio) throw Object.assign(new Error("Thiếu file giọng đọc"), { code: "bad_input" });
 
@@ -164,8 +175,8 @@ export async function runJob(jobId, { registerChild } = {}) {
     await run(jobId, "ffmpeg", ["-y", "-v", "error", "-i", join(inputDir, rawAudio), "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100", "-ac", "1", voMp3], { register: registerChild });
     await run(jobId, "ffmpeg", ["-y", "-v", "error", "-i", voMp3, "-ar", "16000", "-ac", "1", vo16k], { register: registerChild });
 
-    checkCancelled(jobId);
-    setStage(jobId, "transcribing", 0.1, "faster-whisper");
+    await checkCancelled(jobId);
+    await setStage(jobId, "transcribing", 0.1, "faster-whisper");
     const asrPath = join(dir, "asr.json");
     await run(
       jobId,
@@ -182,16 +193,16 @@ export async function runJob(jobId, { registerChild } = {}) {
     log(jobId, `ASR: ${asr.segments.length} segment / ${asr.duration}s`);
     mark("transcribing", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "ad_scan", 0.3, "dò quảng cáo TTS");
+    await setStage(jobId, "ad_scan", 0.3, "dò quảng cáo TTS");
     let asrForAlign = asrPath;
     let audioForBuild = voMp3;
 
     if (opts.ad_scan !== false) {
       const { cuts, findings, suppressed } = await scanForAds(voMp3, asr, (m) => log(jobId, m));
       if (suppressed) {
-        addWarning(jobId, "ad_scan_suppressed", `Bỏ qua ${suppressed.cuts.length} lát cắt nghi dò sai (tổng ${suppressed.removed.toFixed(1)}s)`);
+        await addWarning(jobId, "ad_scan_suppressed", `Bỏ qua ${suppressed.cuts.length} lát cắt nghi dò sai (tổng ${suppressed.removed.toFixed(1)}s)`);
       }
       if (cuts.length) {
         writeFileSync(join(dir, "cuts.json"), JSON.stringify(cuts, null, 1));
@@ -200,16 +211,16 @@ export async function runJob(jobId, { registerChild } = {}) {
         await run(jobId, PYTHON, [join(tpl, "cut_audio.py"), voMp3, join(dir, "cuts.json"), asrPath, cutMp3, cutJson], { register: registerChild });
         asrForAlign = cutJson;
         audioForBuild = cutMp3;
-        for (const f of findings) addWarning(jobId, "ads_detected", f);
+        for (const f of findings) await addWarning(jobId, "ads_detected", f);
       } else {
         log(jobId, "không phát hiện quảng cáo");
       }
     }
     mark("ad_scan", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "aligning", 0.35, "khớp kịch bản với timing");
+    await setStage(jobId, "aligning", 0.35, "khớp kịch bản với timing");
     const transcriptPath = join(dir, "transcript.json");
     try {
       await run(jobId, PYTHON, [join(tpl, "align_script.py"), asrForAlign, join(dir, "script.txt"), transcriptPath, String(LEAD), String(TAIL)], { register: registerChild });
@@ -228,9 +239,9 @@ export async function runJob(jobId, { registerChild } = {}) {
     );
     mark("aligning", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "planning", 0.4, "Claude Code soạn bản đồ cảnh");
+    await setStage(jobId, "planning", 0.4, "Claude Code soạn bản đồ cảnh");
     const plan = await planChapters({
       rows,
       brand,
@@ -240,7 +251,7 @@ export async function runJob(jobId, { registerChild } = {}) {
       onLog: (m) => log(jobId, m),
     });
     if (plan.source === "fallback") {
-      addWarning(
+      await addWarning(
         jobId,
         "plan_fallback",
         plan.attempts === 0
@@ -252,9 +263,9 @@ export async function runJob(jobId, { registerChild } = {}) {
     await run(jobId, "node", [join(tpl, "mkchapters.mjs"), join(dir, "chapters.src.json"), transcriptPath, join(dir, "chapters.json")], { register: registerChild });
     mark("planning", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "building", 0.45, "sinh index.html");
+    await setStage(jobId, "building", 0.45, "sinh index.html");
     await run(
       jobId,
       "node",
@@ -273,17 +284,14 @@ export async function runJob(jobId, { registerChild } = {}) {
     );
     mark("building", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "checking", 0.5, "hyperframes check + thang sửa lỗi");
+    await setStage(jobId, "checking", 0.5, "hyperframes check + thang sửa lỗi");
     const hf = ["--yes", `hyperframes@${process.env.HYPERFRAMES_VERSION || "0.7.86"}`];
     const sizeOverridesPath = join(dir, "size-overrides.json");
     const chaptersSrcPath = join(dir, "chapters.src.json");
 
-    // check đã chạy lint bên trong — không gọi lint riêng nữa.
     const runCheck = async () => {
-      // KHÔNG dùng giá trị trả về của run(): nó chỉ giữ 4000 ký tự cuối, mà JSON của
-      // check dài hơn thế nhiều. Gom toàn bộ stdout qua onLine.
       let raw = "";
       try {
         await run(jobId, "npx", [...hf, "check", "--json"], {
@@ -292,8 +300,6 @@ export async function runJob(jobId, { registerChild } = {}) {
           onLine: (s) => (raw += s),
         });
       } catch {
-        // check thoát khác 0 khi có finding — chuyện bình thường, raw vẫn đủ dùng.
-        // Tuyệt đối không gán đè raw ở đây, sẽ mất JSON đã gom được.
       }
       const start = raw.indexOf("{");
       const end = raw.lastIndexOf("}");
@@ -354,7 +360,7 @@ export async function runJob(jobId, { registerChild } = {}) {
       join(dir, "repair.json"),
       JSON.stringify({ repairs: ladder.repairs, overrides: ladder.overrides, remaining: ladder.quality }, null, 1),
     );
-    patchStatus(jobId, { repairs: ladder.repairs });
+    await patchStatus(jobId, { repairs: ladder.repairs });
 
     if (ladder.blocking.length) {
       const first = ladder.blocking[0];
@@ -364,7 +370,7 @@ export async function runJob(jobId, { registerChild } = {}) {
       );
     }
     if (ladder.quality.length) {
-      addWarning(
+      await addWarning(
         jobId,
         "quality_degraded",
         `Còn ${ladder.quality.length} lỗi chất lượng sau khi tự sửa (${ladder.quality.map((f) => f.code).join(", ")}) — vẫn render`,
@@ -372,9 +378,9 @@ export async function runJob(jobId, { registerChild } = {}) {
     }
     mark("checking", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "rendering", 0.55, "render MP4");
+    await setStage(jobId, "rendering", 0.55, "render MP4");
     const outMp4 = join(dir, "output.mp4");
     try {
       await run(
@@ -388,7 +394,7 @@ export async function runJob(jobId, { registerChild } = {}) {
             const m = s.match(/(\d+)\s*\/\s*(\d+)/);
             if (m) {
               const p = Number(m[1]) / Number(m[2]);
-              if (p >= 0 && p <= 1) setStage(jobId, "rendering", 0.55 + p * 0.35, `frame ${m[1]}/${m[2]}`);
+              if (p >= 0 && p <= 1) reportProgress("rendering", 0.55 + p * 0.35, `frame ${m[1]}/${m[2]}`);
             }
           },
         },
@@ -399,32 +405,32 @@ export async function runJob(jobId, { registerChild } = {}) {
     if (!existsSync(outMp4)) throw Object.assign(new Error("Render xong nhưng không thấy file MP4"), { code: "render_failed" });
     mark("rendering", step);
 
-    checkCancelled(jobId);
+    await checkCancelled(jobId);
     step = Date.now();
     const folderId = status.drive?.folder_id || process.env.GOOGLE_DRIVE_FOLDER_ID;
     let drive = { folder_id: folderId || null, file_id: null, filename: null, link: null };
 
     if (driveConfigured()) {
-      setStage(jobId, "uploading", 0.92, "upload Google Drive");
+      await setStage(jobId, "uploading", 0.92, "upload Google Drive");
       const filename = (status.drive?.filename || "bantin-{date}-{job_id}.mp4")
         .replace("{date}", (brand.date || new Date().toISOString().slice(0, 10)).replace(/[^\w-]+/g, "-"))
         .replace("{job_id}", jobId);
       const file = await uploadToDrive(outMp4, {
         folderId,
         filename,
-        onProgress: (p) => setStage(jobId, "uploading", 0.92 + p * 0.07, `${Math.round(p * 100)}%`),
+        onProgress: (p) => reportProgress("uploading", 0.92 + p * 0.07, `${Math.round(p * 100)}%`),
       });
       drive = { folder_id: folderId || null, file_id: file.id, filename: file.name, link: file.webViewLink };
       log(jobId, `Drive: ${file.webViewLink}`);
       cleanupAfterUpload(dir, (m) => log(jobId, m));
     } else {
-      addWarning(jobId, "drive_not_configured", "Chưa cấu hình Google Drive — video chỉ nằm trên VPS");
+      await addWarning(jobId, "drive_not_configured", "Chưa cấu hình Google Drive — video chỉ nằm trên VPS");
       log(jobId, "bỏ qua upload: thiếu credential Drive");
     }
     mark("uploading", step);
 
     const transcript = JSON.parse(readFileSync(transcriptPath, "utf8"));
-    patchStatus(jobId, {
+    await patchStatus(jobId, {
       status: "done",
       stage: { name: "done", progress: 1, detail: null },
       timings_sec: { ...timings, total: Math.round((Date.now() - t0) / 1000) },
@@ -442,12 +448,12 @@ export async function runJob(jobId, { registerChild } = {}) {
     log(jobId, `DONE trong ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
     if (e instanceof JobCancelled) {
-      patchStatus(jobId, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
+      await patchStatus(jobId, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
       log(jobId, "CANCELLED");
       return;
     }
     const code = e.code && typeof e.code === "string" ? e.code : "internal_error";
-    const stage = readStatus(jobId)?.status || "unknown";
+    const stage = (await readStatus(jobId))?.status || "unknown";
     fail(jobId, code, stage, e.message);
     await alert(jobId, { code, stage, message: String(e.message).slice(0, 500) });
   }

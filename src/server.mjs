@@ -19,6 +19,10 @@ import {
   readLogs,
   readStatus,
   reapInterrupted,
+  requeueUnstarted,
+  claimNextQueued,
+  countQueued,
+  queuePosition,
   saveIdempotency,
   scheduleDir,
   scheduleInputExists,
@@ -38,8 +42,6 @@ const MAX_IMAGE = 10 * 1024 * 1024;
 const MAX_TOTAL = 100 * 1024 * 1024;
 
 initStore();
-const reaped = reapInterrupted();
-if (reaped) console.log(`[store] đánh dấu failed cho ${reaped} job bị cắt ngang`);
 
 let sql;
 try {
@@ -51,29 +53,27 @@ try {
   process.exit(1);
 }
 
-const queue = [];
+const reaped = await reapInterrupted();
+if (reaped) console.log(`[store] đánh dấu failed cho ${reaped} job bị cắt ngang`);
+const requeued = await requeueUnstarted();
+if (requeued) console.log(`[store] trả ${requeued} job chưa kịp chạy về hàng đợi`);
+
 let running = null;
 const children = new Map();
 
-function enqueue(jobId) {
-  queue.push(jobId);
-  refreshQueuePositions();
+async function enqueue(jobId) {
+  await patchStatus(jobId, { status: "queued" });
   pump();
 }
 
-function refreshQueuePositions() {
-  queue.forEach((id, i) => patchStatus(id, { queue_position: i + 1 }));
-}
-
 async function pump() {
-  if (running || queue.length === 0) return;
-  const jobId = queue.shift();
-  refreshQueuePositions();
-  const s = readStatus(jobId);
-  if (!s || isTerminal(s.status)) return pump();
+  if (running) return;
 
+  const claimed = await claimNextQueued();
+  if (!claimed) return;
+
+  const jobId = claimed.job_id;
   running = jobId;
-  patchStatus(jobId, { queue_position: 0, started_at: new Date().toISOString() });
   const kids = new Set();
   children.set(jobId, kids);
 
@@ -105,11 +105,11 @@ async function pump() {
       clearTimeout(killTimer); 
 
       try {
-        const cur = readStatus(jobId);
+        const cur = await readStatus(jobId);
         if (cur && ["done", "cancelled"].includes(cur.status)) {
           log(jobId, `bỏ qua ghi timeout: job đã ${cur.status}`);
         } else {
-          patchStatus(jobId, {
+          await patchStatus(jobId, {
             status: "failed",
             stage: { name: "failed", progress: null, detail: null },
             error: {
@@ -150,7 +150,7 @@ async function createJobFromSchedule(row) {
   const { params } = parseStoryboard(row.storyboard);
   const brand = brandFromParams(params);
 
-  writeStatus(jobId, {
+  await writeStatus(jobId, {
     job_id: jobId,
     status: "queued",
     stage: { name: "queued", progress: 0, detail: null },
@@ -170,7 +170,7 @@ async function createJobFromSchedule(row) {
   });
 
   log(jobId, `job tạo từ lịch #${row.id} "${row.name}"`);
-  enqueue(jobId);
+  await enqueue(jobId);
   return jobId;
 }
 
@@ -198,14 +198,14 @@ app.use("*", async (c, next) => {
   return next();
 });
 
-app.get("/health", (c) => {
+app.get("/health", async (c) => {
   const { startedAt, succeededAt } = lastTick();
   const okAt = succeededAt ? Date.parse(succeededAt) : null;
   const tickStale = okAt !== null && Date.now() - okAt > 600_000;
   const body = {
     ok: !tickStale,
     running,
-    queued: queue.length,
+    queued: await countQueued(),
     last_tick_started_at: startedAt,
     last_tick_ok_at: succeededAt,
     now: new Date().toISOString(),
@@ -213,20 +213,20 @@ app.get("/health", (c) => {
   return c.json(body, tickStale ? 503 : 200);
 });
 
-app.get("/", (c) => {
+app.get("/", async (c) => {
   const t = c.req.query("token");
   if (t) c.header("set-cookie", `bantin_token=${encodeURIComponent(t)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
-  return c.html(renderPage.dashboard({ templates: listTemplates(), jobs: listJobs({ limit: 50 }) }));
+  return c.html(renderPage.dashboard({ templates: listTemplates(), jobs: await listJobs({ limit: 50 }) }));
 });
 
-app.get("/v1/templates", (c) => c.json({ templates: listTemplates() }));
+app.get("/v1/templates", async (c) => c.json({ templates: listTemplates() }));
 
 app.post("/v1/jobs", async (c) => {
   const idemKey = c.req.header("idempotency-key");
   if (idemKey) {
-    const existing = lookupIdempotency(idemKey);
+    const existing = await lookupIdempotency(idemKey);
     if (existing) {
-      const s = readStatus(existing);
+      const s = await readStatus(existing);
       if (s) return c.json({ ...s, idempotent_replay: true }, 200);
     }
   }
@@ -313,12 +313,12 @@ app.post("/v1/jobs", async (c) => {
     artifacts: {},
     error: null,
   };
-  writeStatus(jobId, status);
+  await writeStatus(jobId, status);
   log(jobId, `job tạo từ ${files.length} file (${Math.round(total / 1048576)} MB)`);
-  if (idemKey) saveIdempotency(idemKey, jobId);
+  if (idemKey) await saveIdempotency(idemKey, jobId);
 
-  const position = running ? queue.length + 1 : 0;
-  enqueue(jobId);
+  await enqueue(jobId);
+  const position = await queuePosition(jobId);
 
   return c.json(
     {
@@ -332,33 +332,33 @@ app.post("/v1/jobs", async (c) => {
   );
 });
 
-app.get("/v1/jobs", (c) => {
+app.get("/v1/jobs", async (c) => {
   const status = c.req.query("status");
   const limit = Math.min(Number(c.req.query("limit") || 100), 500);
-  return c.json({ jobs: listJobs({ status, limit }), running, queued: queue.length });
+  return c.json({ jobs: await listJobs({ status, limit }), running, queued: await countQueued() });
 });
 
-app.get("/v1/jobs/:id", (c) => {
-  const s = readStatus(c.req.param("id"));
+app.get("/v1/jobs/:id", async (c) => {
+  const s = await readStatus(c.req.param("id"));
   return s ? c.json(s) : c.json({ error: { code: "not_found" } }, 404);
 });
 
-app.get("/v1/jobs/:id/logs", (c) => {
+app.get("/v1/jobs/:id/logs", async (c) => {
   const id = c.req.param("id");
-  if (!readStatus(id)) return c.json({ error: { code: "not_found" } }, 404);
+  if (!(await readStatus(id))) return c.json({ error: { code: "not_found" } }, 404);
   return c.json({ logs: readLogs(id, Math.min(Number(c.req.query("limit") || 500), 5000)) });
 });
 
-function cancelJob(jobId) {
-  const s = readStatus(jobId);
+async function cancelJob(jobId) {
+  const s = await readStatus(jobId);
   if (!s || isTerminal(s.status)) return;
 
-  patchStatus(jobId, { cancel_requested: true });
-  const i = queue.indexOf(jobId);
-  if (i >= 0) {
-    queue.splice(i, 1);
-    patchStatus(jobId, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
-    refreshQueuePositions();
+  await patchStatus(jobId, { cancel_requested: true });
+
+  // Còn nằm trong hàng đợi thì huỷ thẳng; đang chạy thì giết tiến trình con và
+  // để pipeline tự thấy cờ cancel_requested ở chốt checkCancelled kế tiếp.
+  if (s.status === "queued") {
+    await patchStatus(jobId, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
   } else {
     for (const child of children.get(jobId) || []) {
       try {
@@ -369,19 +369,19 @@ function cancelJob(jobId) {
   }
 }
 
-app.post("/v1/jobs/:id/cancel", (c) => {
+app.post("/v1/jobs/:id/cancel", async (c) => {
   const id = c.req.param("id");
-  const s = readStatus(id);
+  const s = await readStatus(id);
   if (!s) return c.json({ error: { code: "not_found" } }, 404);
   if (isTerminal(s.status)) return c.json({ error: { code: "already_terminal", message: s.status } }, 409);
 
-  cancelJob(id);
-  return c.json(readStatus(id));
+  await cancelJob(id);
+  return c.json(await readStatus(id));
 });
 
-app.get("/v1/jobs/:id/events", (c) => {
+app.get("/v1/jobs/:id/events", async (c) => {
   const id = c.req.param("id");
-  if (!readStatus(id)) return c.json({ error: { code: "not_found" } }, 404);
+  if (!(await readStatus(id))) return c.json({ error: { code: "not_found" } }, 404);
 
   let timer = null;
   let closed = false;
@@ -395,9 +395,9 @@ app.get("/v1/jobs/:id/events", (c) => {
     start(controller) {
       const enc = new TextEncoder();
       let last = "";
-      const tick = () => {
+      const tick = async () => {
         if (closed) return;
-        const s = readStatus(id);
+        const s = await readStatus(id);
         if (!s) return;
         const json = JSON.stringify(s);
         try {
@@ -434,20 +434,20 @@ function sendFile(c, path, type) {
   return c.body(Readable.toWeb(createReadStream(path)));
 }
 
-app.get("/v1/jobs/:id/video", (c) => {
+app.get("/v1/jobs/:id/video", async (c) => {
   const id = c.req.param("id");
   const p = join(jobDir(id), "output.mp4");
   c.header("content-disposition", `inline; filename="${id}.mp4"`);
   return sendFile(c, p, "video/mp4");
 });
 
-app.get("/v1/jobs/:id/files/:name", (c) => {
+app.get("/v1/jobs/:id/files/:name", async (c) => {
   const name = c.req.param("name");
   if (!/^[\w.-]+$/.test(name)) return c.json({ error: { code: "bad_name" } }, 400);
   return sendFile(c, join(jobDir(c.req.param("id")), name), "application/json; charset=utf-8");
 });
 
-app.get("/v1/jobs/:id/project/*", (c) => {
+app.get("/v1/jobs/:id/project/*", async (c) => {
   const id = c.req.param("id");
   const rest = c.req.path.split(`/v1/jobs/${id}/project/`)[1] || "index.html";
   const rel = normalize(decodeURIComponent(rest || "index.html"));
@@ -471,10 +471,12 @@ app.get("/v1/jobs/:id/project/*", (c) => {
 });
 
 app.get("/schedule", async (c) => {
-  const rows = (await listRows(sql)).map((r) => ({
-    ...r,
-    plan_source: r.job_id ? readStatus(r.job_id)?.plan_source || null : null,
-  }));
+  const rows = await Promise.all(
+    (await listRows(sql)).map(async (r) => ({
+      ...r,
+      plan_source: r.job_id ? (await readStatus(r.job_id))?.plan_source || null : null,
+    })),
+  );
   return c.html(renderPage.schedule({ rows }));
 });
 
