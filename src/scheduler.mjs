@@ -1,5 +1,5 @@
 import { claimDue, markRow, reclaimStale, resetToPending, rowsInFlight, scheduleRetry } from "./schedule.mjs";
-import { readStatus } from "./store.mjs";
+import { clearScheduleInput, readStatus } from "./store.mjs";
 
 export const RETRYABLE_CODES = new Set(["interrupted", "render_failed", "internal_error"]);
 
@@ -85,6 +85,9 @@ async function reconcileRow(sql, row, cfg, log) {
       last_error: null,
     });
     log(`lịch #${row.id}: xong → ${job.drive?.link || "(chưa cấu hình Drive)"}`);
+
+    const freed = clearScheduleInput(row.id);
+    if (freed) log(`lịch #${row.id}: dọn ${(freed / 1048576).toFixed(1)} MB file gốc`);
     return;
   }
 

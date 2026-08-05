@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export const WORK_DIR = resolve(process.env.WORK_DIR || "./work");
@@ -17,6 +17,31 @@ export function jobDir(id) {
 
 export function scheduleDir(id) {
   return join(WORK_DIR, "schedule", String(id));
+}
+
+export function clearScheduleInput(id) {
+  const dir = join(scheduleDir(id), "input");
+  if (!existsSync(dir)) return 0;
+
+  let freed = 0;
+  const walk = (p) => {
+    const st = statSync(p);
+    if (!st.isDirectory()) return (freed += st.size);
+    for (const f of readdirSync(p)) walk(join(p, f));
+  };
+  try {
+    walk(dir);
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    return 0; 
+  }
+  return freed;
+}
+
+export function scheduleInputExists(id) {
+  const dir = join(scheduleDir(id), "input");
+  if (!existsSync(dir)) return false;
+  return readdirSync(dir).some((f) => /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f));
 }
 
 export function newJobId() {

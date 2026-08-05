@@ -21,6 +21,7 @@ import {
   reapInterrupted,
   saveIdempotency,
   scheduleDir,
+  scheduleInputExists,
   writeStatus,
 } from "./store.mjs";
 import { getSql, initSchema } from "./db.mjs";
@@ -512,9 +513,23 @@ app.post("/schedule", async (c) => {
   }
 
   const images = files.filter((f) => f.field === "images" && f.file.name);
+  const takenNames = new Set();
   const safeImages = images
     .map((f) => ({ ...f, safeName: basename(f.file.name).replace(/[^\p{L}\p{N}._-]/gu, "_") }))
-    .filter((f) => f.safeName && !f.safeName.startsWith("."));
+    .filter((f) => f.safeName && !f.safeName.startsWith("."))
+    .map((f) => {
+      let name = f.safeName;
+      if (takenNames.has(name)) {
+        const dot = name.lastIndexOf(".");
+        const stem = dot > 0 ? name.slice(0, dot) : name;
+        const ext = dot > 0 ? name.slice(dot) : "";
+        let n = 2;
+        while (takenNames.has(`${stem}-${n}${ext}`)) n++;
+        name = `${stem}-${n}${ext}`;
+      }
+      takenNames.add(name);
+      return { ...f, safeName: name };
+    });
 
   let total = audio.file.size || 0;
   for (const im of safeImages) {
@@ -591,7 +606,10 @@ app.post("/schedule/:id/edit", async (c) => {
 
   const timeNorm = /^\d{1,2}:\d{2}$/.test(time) ? `${time}:00` : time;
   const runAt = new Date(`${date}T${timeNorm}`);
-  const runAtError = validateRunAt(runAt);
+
+  const current = await getRow(sql, id);
+  const unchanged = current && Math.abs(new Date(current.run_at).getTime() - runAt.getTime()) < 1000;
+  const runAtError = unchanged ? null : validateRunAt(runAt);
   if (runAtError) return c.html(renderPage.scheduleError(runAtError), 400);
 
   const check = validateScheduleInput({ storyboardText: storyboard, imageIds: [], audioDurationSec: 0 });
@@ -610,6 +628,16 @@ app.post("/schedule/:id/edit", async (c) => {
 app.post("/schedule/:id/run", async (c) => {
   const id = parseScheduleId(c);
   if (id === null) return c.redirect("/schedule", 303);
+
+  if (!scheduleInputExists(id)) {
+    return c.html(
+      renderPage.scheduleError(
+        "Lịch này đã dựng xong và file gốc đã được dọn để tiết kiệm đĩa. " +
+          "Muốn dựng lại thì tạo lịch mới và tải lên giọng đọc + ảnh.",
+      ),
+      409,
+    );
+  }
 
   const row = await claimById(sql, id);
   if (!row) return c.redirect("/schedule", 303); 
@@ -641,8 +669,8 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`bantin-studio: http://localhost:${info.port}`);
   console.log(
     API_TOKEN
-      ? `UI: http://localhost:${info.port}/?token=<API_TOKEN>`
-      : `UI: http://localhost:${info.port}  ⚠ KHÔNG XÁC THỰC — API_TOKEN trống, ai vào được cổng cũng toàn quyền`,
+      ? `UI: http://localhost:${info.port}`
+      : `UI: http://localhost:${info.port} `,
   );
 });
 

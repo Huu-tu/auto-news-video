@@ -142,7 +142,6 @@ function jobRow(j) {
     <td><span class="dot"></span>${esc(STATUS_LABEL[j.status] || j.status)}
       ${j.queue_position ? `<span class="mono">#${j.queue_position}</span>` : ""}</td>
     <td><div class="mono">${esc(j.job_id)}</div>${esc(j.brand?.sub || j.metadata?.channel || "")}</td>
-    <td>${esc(j.brand?.date || "")}</td>
     <td><div class="mono">${esc(fmtClock(j.started_at || j.created_at))}</div>
       ${runElapsed(j) ? `<div class="mono" style="opacity:.65">${esc(runElapsed(j))}</div>` : ""}</td>
     <td>${active ? `<div class="bar"><i style="width:${pct}%"></i></div><div class="mono">${esc(j.stage?.detail || "")}</div>` : fmtDur(j.artifacts?.duration_sec)}</td>
@@ -294,7 +293,7 @@ ${nav("/")}
   <h2>Video</h2>
   ${
     jobs.length
-      ? `<table><thead><tr><th>Trạng thái</th><th>Job</th><th title="Chữ in trên thanh đầu video, lấy từ storyboard — không phải lúc job chạy">Ngày trên video</th><th title="Lúc job bắt đầu chạy, và tổng thời gian chạy">Chạy lúc</th><th>Tiến độ / độ dài</th><th></th><th></th></tr></thead>
+      ? `<table><thead><tr><th>Trạng thái</th><th>Job</th><th title="Lúc job bắt đầu chạy, và tổng thời gian chạy">Chạy lúc</th><th>Tiến độ / độ dài</th><th></th><th></th></tr></thead>
          <tbody id="rows">${jobs.map(jobRow).join("")}</tbody></table>`
       : '<div class="empty">Chưa có video nào. Bấm “Tạo video” ở trên.</div>'
   }
