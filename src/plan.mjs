@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { REPAIRABLE_FIELDS } from "./repair.mjs";
+
 const KINDS = {
   intro: ["kicker", "head"],
   divider: ["head"],
@@ -14,6 +16,22 @@ const KINDS = {
 };
 
 const KIND_ALIAS = { outro: "divider", ending: "divider", section: "divider", point: "story", fact: "stat" };
+
+// Trần độ dài head theo kind — khớp với bậc thang cỡ chữ trong
+// templates/vn-news-vertical/build.mjs. Đổi số ở đây thì phải đổi cả bên đó.
+export const HEAD_MAX = {
+  intro: 28,
+  divider: 40,
+  headline: 60,
+  story: 60,
+  image: 60,
+  chart: 60,
+  tiles: 60,
+  keys: 60,
+  quote: 120,
+};
+
+const LABEL_MAX = 40;
 
 export function normalizeKinds(cards) {
   const changed = [];
@@ -46,6 +64,13 @@ export function validateChapters(cards, lineCount) {
     for (const f of KINDS[c.kind]) {
       if (c[f] === undefined || c[f] === null || c[f] === "") errors.push(`${at} (${c.kind}): thiếu field "${f}"`);
     }
+    const cap = HEAD_MAX[c.kind];
+    if (cap && typeof c.head === "string" && c.head.length > cap) {
+      errors.push(`${at} (${c.kind}): head dài ${c.head.length} ký tự, tối đa ${cap}`);
+    }
+    if (c.kind === "stat" && typeof c.label === "string" && c.label.length > LABEL_MAX) {
+      errors.push(`${at} (stat): label dài ${c.label.length} ký tự, tối đa ${LABEL_MAX}`);
+    }
     if (c.kind === "chart" && !Array.isArray(c.bars)) errors.push(`${at}: bars phải là mảng`);
     if (c.kind === "tiles" && !Array.isArray(c.tiles)) errors.push(`${at}: tiles phải là mảng`);
     if (c.kind === "keys" && !Array.isArray(c.keys)) errors.push(`${at}: keys phải là mảng`);
@@ -75,7 +100,7 @@ export function fallbackChapters(rows, brand) {
     { line: "intro", kind: "intro", kicker: "ĐIỂM TIN NHANH", head: brand.name || "BẢN TIN", sub: brand.date || "" },
   ];
   rows.forEach((r, i) => {
-    const head = r.text.split(/[,.]/)[0].slice(0, 70).trim();
+    const head = r.text.split(/[,.]/)[0].slice(0, HEAD_MAX.story).trim();
     cards.push({
       line: i,
       kind: "story",
@@ -128,7 +153,10 @@ Mỗi phần tử là một cảnh, có:
   image    → img, cat, head, sub?, tag?
 
 QUY TẮC:
-- head viết HOA hoặc Title Case, ngắn gọn, tối đa ~70 ký tự.
+- head viết HOA hoặc Title Case, NGẮN. Trần cứng theo kind, vượt là bị trả lại:
+  intro 28 ký tự (đây là chữ to nhất màn hình — 3 từ là vừa)
+  divider 40 · headline/story/image/chart/tiles/keys 60 · quote 120
+  stat: label tối đa 40 ký tự.
 - cat là nhãn danh mục ngắn, viết HOA (vd "TÀI CHÍNH · THẾ GIỚI").
 - Số liệu nổi bật trong lời thoại → ưu tiên kind "stat" hoặc "tiles" thay vì "story".
 - KHÔNG bịa số liệu, tên riêng, chức danh không có trong kịch bản.
@@ -223,4 +251,40 @@ export async function planChapters({ rows, brand, images, bin = "claude", fallba
 
   onLog("dùng bố cục fallback");
   return { cards: fallbackChapters(rows, brand), source: "fallback", attempts: retries + 1, errors: allErrors };
+}
+
+// Bậc 2 của thang sửa lỗi: đưa findings của hyperframes check cho Claude Code và
+// đòi lại bản đồ cảnh đã rút ngắn chữ. Chỉ chạy khi sửa tất định đã thất bại.
+// Ràng buộc thật sự nằm ở validateRepairedChapters() bên repair.mjs — prompt chỉ là
+// lời đề nghị, kiểm tra mới là hợp đồng.
+export async function repairChaptersWithLlm({ findings, chapters, bin = "claude", onLog = () => {} }) {
+  const list = findings
+    .slice(0, 10)
+    .map((f) => `- [${f.section}] ${f.code} tại ${f.containerSelector || f.selector || "?"}: ${f.message || ""}`)
+    .join("\n");
+
+  const prompt = `Bản đồ cảnh dưới đây dựng ra video bị lỗi bố cục. Sửa lại NỘI DUNG CHỮ cho vừa khung.
+
+LỖI TỪ TRÌNH KIỂM TRA:
+${list}
+
+Nguyên nhân gần như luôn là tiêu đề quá dài so với khung. Hãy RÚT NGẮN chữ.
+
+CHỈ ĐƯỢC SỬA: ${REPAIRABLE_FIELDS.join(", ")}
+TUYỆT ĐỐI KHÔNG ĐỔI: số lượng cảnh, "line", "kind", "img". Đổi "line" là phụ đề trôi khỏi giọng đọc.
+Trần độ dài head: intro ${HEAD_MAX.intro} ký tự · divider ${HEAD_MAX.divider} · story/image/headline ${HEAD_MAX.story} · quote ${HEAD_MAX.quote}.
+
+ĐẦU RA: CHỈ một mảng JSON hợp lệ, không markdown, không giải thích.
+
+BẢN ĐỒ CẢNH HIỆN TẠI:
+${JSON.stringify(chapters, null, 1)}`;
+
+  try {
+    const raw = await runClaude(prompt, { bin });
+    const { cards } = normalizeKinds(extractJsonArray(raw));
+    return cards;
+  } catch (e) {
+    onLog(`bậc 2: gọi claude lỗi — ${e.message}`);
+    return null;
+  }
 }

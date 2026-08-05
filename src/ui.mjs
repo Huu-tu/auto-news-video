@@ -28,6 +28,20 @@ const SCHEDULE_LABEL = {
   missed: "⚠️ Bỏ lỡ",
 };
 
+// Tóm tắt nhật ký thang sửa lỗi để hiện trên dòng job. Không có badge này thì thang
+// sửa âm thầm vá còn news.css không ai sửa — xem spec 2026-08-05-thang-sua-loi.
+export function repairBadge(repairs) {
+  if (!Array.isArray(repairs) || repairs.length === 0) return "";
+  const det = repairs.filter((r) => r.rung === 1 && r.ok).length;
+  const llm = repairs.filter((r) => r.rung === 2 && r.ok).length;
+  const failed = repairs.filter((r) => r.ok === false).length;
+  const parts = [];
+  if (det) parts.push(`${det} tự sửa`);
+  if (llm) parts.push(`${llm} LLM sửa`);
+  if (failed) parts.push(`${failed} không sửa được`);
+  return parts.length ? `🔧 ${parts.join(" · ")}` : "";
+}
+
 const fmtDate = (d) => new Date(d).toLocaleDateString("vi-VN");
 const fmtTime = (d) => new Date(d).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 
@@ -43,6 +57,7 @@ const timeInputValue = (d) => {
 const CSS = `
 :root{--bg:#0e1116;--panel:#161b22;--line:#242c37;--fg:#e6edf3;--dim:#8b98a5;--red:#d21422;--green:#2ea043;--amber:#d29922}
 *{box-sizing:border-box}
+.repair{font-size:11px;color:var(--amber);margin-top:2px}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 a{color:inherit}
 header{display:flex;align-items:baseline;gap:14px;padding:18px 24px;border-bottom:1px solid var(--line)}
@@ -141,7 +156,8 @@ function jobRow(j) {
   return `<tr class="${statusClass(j.status)}" data-job="${esc(j.job_id)}">
     <td><span class="dot"></span>${esc(STATUS_LABEL[j.status] || j.status)}
       ${j.queue_position ? `<span class="mono">#${j.queue_position}</span>` : ""}</td>
-    <td><div class="mono">${esc(j.job_id)}</div>${esc(j.brand?.sub || j.metadata?.channel || "")}</td>
+    <td><div class="mono">${esc(j.job_id)}</div>${esc(j.brand?.sub || j.metadata?.channel || "")}
+      ${repairBadge(j.repairs) ? `<div class="repair" title="Chi tiết trong repair.json của job">${esc(repairBadge(j.repairs))}</div>` : ""}</td>
     <td><div class="mono">${esc(fmtClock(j.started_at || j.created_at))}</div>
       ${runElapsed(j) ? `<div class="mono" style="opacity:.65">${esc(runElapsed(j))}</div>` : ""}</td>
     <td>${active ? `<div class="bar"><i style="width:${pct}%"></i></div><div class="mono">${esc(j.stage?.detail || "")}</div>` : fmtDur(j.artifacts?.duration_sec)}</td>

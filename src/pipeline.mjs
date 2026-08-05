@@ -4,7 +4,8 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { scanForAds } from "./adscan.mjs";
-import { planChapters } from "./plan.mjs";
+import { planChapters, repairChaptersWithLlm, validateChapters } from "./plan.mjs";
+import { runRepairLadder } from "./repair.mjs";
 import { driveConfigured, uploadToDrive } from "./drive.mjs";
 import { imageIdFromRef, parseStoryboard, toScriptText } from "./storyboard.mjs";
 import { WORK_DIR, addWarning, jobDir, log, patchStatus, readStatus, setStage } from "./store.mjs";
@@ -274,17 +275,100 @@ export async function runJob(jobId, { registerChild } = {}) {
 
     checkCancelled(jobId);
     step = Date.now();
-    setStage(jobId, "checking", 0.5, "hyperframes lint + check");
+    setStage(jobId, "checking", 0.5, "hyperframes check + thang sửa lỗi");
     const hf = ["--yes", `hyperframes@${process.env.HYPERFRAMES_VERSION || "0.7.86"}`];
-    try {
-      await run(jobId, "npx", [...hf, "lint"], { cwd: projDir, register: registerChild });
-    } catch (e) {
-      throw Object.assign(e, { code: "lint_failed" });
+    const sizeOverridesPath = join(dir, "size-overrides.json");
+    const chaptersSrcPath = join(dir, "chapters.src.json");
+
+    // check đã chạy lint bên trong — không gọi lint riêng nữa.
+    const runCheck = async () => {
+      // KHÔNG dùng giá trị trả về của run(): nó chỉ giữ 4000 ký tự cuối, mà JSON của
+      // check dài hơn thế nhiều. Gom toàn bộ stdout qua onLine.
+      let raw = "";
+      try {
+        await run(jobId, "npx", [...hf, "check", "--json"], {
+          cwd: projDir,
+          register: registerChild,
+          onLine: (s) => (raw += s),
+        });
+      } catch {
+        // check thoát khác 0 khi có finding — chuyện bình thường, raw vẫn đủ dùng.
+        // Tuyệt đối không gán đè raw ở đây, sẽ mất JSON đã gom được.
+      }
+      const start = raw.indexOf("{");
+      const end = raw.lastIndexOf("}");
+      if (start < 0 || end <= start) {
+        throw Object.assign(new Error("check --json không trả JSON đọc được"), { code: "check_failed" });
+      }
+      return JSON.parse(raw.slice(start, end + 1));
+    };
+
+    const rebuild = async ({ overrides, chapters }) => {
+      writeFileSync(sizeOverridesPath, JSON.stringify(overrides, null, 1));
+      writeFileSync(chaptersSrcPath, JSON.stringify(chapters, null, 1));
+      await run(jobId, "node", [join(tpl, "mkchapters.mjs"), chaptersSrcPath, transcriptPath, join(dir, "chapters.json")], { register: registerChild });
+      await run(
+        jobId,
+        "node",
+        [
+          join(tpl, "build.mjs"),
+          "--out", projDir,
+          "--audio", voFinal,
+          "--transcript", transcriptPath,
+          "--chapters", join(dir, "chapters.json"),
+          "--brand", brand.name || "BẢN TIN",
+          "--brand-sub", brand.sub || "TỔNG HỢP",
+          "--date", brand.date || "",
+          "--size-overrides", sizeOverridesPath,
+          ...(opts.fps ? ["--fps", String(opts.fps)] : []),
+        ],
+        { cwd: dir, register: registerChild },
+      );
+    };
+
+    const repairWithLlm = async ({ findings, chapters }) => {
+      const cards = await repairChaptersWithLlm({
+        findings,
+        chapters,
+        bin: process.env.CLAUDE_BIN || "claude",
+        onLog: (m) => log(jobId, m),
+      });
+      if (!cards) return null;
+      const { ok, errors } = validateChapters(cards, rows.length);
+      if (!ok) {
+        log(jobId, `bậc 2: schema sai — ${errors.slice(0, 3).join("; ")}`);
+        return null;
+      }
+      return cards;
+    };
+
+    const ladder = await runRepairLadder({
+      runCheck,
+      rebuild,
+      repairWithLlm,
+      chapters: plan.cards,
+      onLog: (m) => log(jobId, m),
+    });
+
+    writeFileSync(
+      join(dir, "repair.json"),
+      JSON.stringify({ repairs: ladder.repairs, overrides: ladder.overrides, remaining: ladder.quality }, null, 1),
+    );
+    patchStatus(jobId, { repairs: ladder.repairs });
+
+    if (ladder.blocking.length) {
+      const first = ladder.blocking[0];
+      throw Object.assign(
+        new Error(`${ladder.blocking.length} lỗi chặn cứng, đầu tiên: [${first.section}] ${first.code} — ${first.message || ""}`),
+        { code: "check_failed" },
+      );
     }
-    try {
-      await run(jobId, "npx", [...hf, "check"], { cwd: projDir, register: registerChild });
-    } catch (e) {
-      throw Object.assign(e, { code: "check_failed" });
+    if (ladder.quality.length) {
+      addWarning(
+        jobId,
+        "quality_degraded",
+        `Còn ${ladder.quality.length} lỗi chất lượng sau khi tự sửa (${ladder.quality.map((f) => f.code).join(", ")}) — vẫn render`,
+      );
     }
     mark("checking", step);
 

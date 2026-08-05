@@ -7,7 +7,7 @@
 //   node build.mjs --out <projectDir> --audio <mp3> \
 //        --transcript <transcript.json> --chapters <chapters.json> \
 //        [--brand "BẢN TIN"] [--brand-sub "TỔNG HỢP"] [--date "Chiều 18 · 07"] \
-//        [--kicker "ĐIỂM TIN NHANH"] [--fps 25]
+//        [--kicker "ĐIỂM TIN NHANH"] [--fps 25] [--size-overrides <json>]
 //
 // transcript.json shape (from transcribe.py / faster-whisper):
 //   { "duration": <sec>, "segments": [ { start, end, text, words:[{w,start,end}] } ] }
@@ -53,6 +53,32 @@ try {
 }
 const fix = (s) => FIXES.reduce((acc, [a, b]) => acc.split(a).join(b), s);
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// ---- optional: file đè cỡ chữ do thang sửa lỗi sinh ra { "sc0": "len3" } ----
+let SIZE_OVERRIDES = {};
+if (A["size-overrides"]) {
+  try {
+    SIZE_OVERRIDES = JSON.parse(readFileSync(resolve(A["size-overrides"]), "utf8"));
+  } catch {
+    /* không đọc được file đè — quay về bậc thang theo độ dài */
+  }
+}
+
+// Bậc thang cỡ chữ: tiêu đề càng dài, class càng nhỏ. Ngưỡng khớp với HEAD_MAX
+// trong src/plan.mjs — đổi bên đó thì đổi cả đây. Mảng xếp giảm dần, khớp đầu tiên thắng.
+const INTRO_STEPS = [[60, "len4"], [40, "len3"], [28, "len2"]];
+const HEAD_STEPS = [[90, "len3"], [60, "len2"]];
+
+const lenClass = (text, steps) => {
+  const n = String(text ?? "").length;
+  for (const [min, cls] of steps) if (n >= min) return ` ${cls}`;
+  return "";
+};
+
+// Đè thắng bậc thang tự động: thang sửa lỗi đã đo thực tế bằng hyperframes check,
+// còn lenClass chỉ đoán theo số ký tự.
+const sizeClass = (sceneId, text, steps) =>
+  SIZE_OVERRIDES[sceneId] ? ` ${SIZE_OVERRIDES[sceneId]}` : lenClass(text, steps);
 
 const segs = T.segments;
 const audioLen = T.duration || (segs.length ? segs[segs.length - 1].end : 0);
@@ -129,7 +155,7 @@ const sceneHTML = CHAPTERS.map((ch, i) => {
   if (ch.kind === "intro")
     return `        <section class="scene clip" id="${id}" data-start="${ch.start}" data-duration="${dur}" data-track-index="1">
           <div class="kicker" id="${id}-k">${esc(ch.kicker || KICKER)}</div>
-          <div class="intro-title" id="${id}-t">${esc(ch.head || BRAND)}</div>
+          <div class="intro-title${sizeClass(id, ch.head || BRAND, INTRO_STEPS)}" id="${id}-t">${esc(ch.head || BRAND)}</div>
           <div class="intro-underline" id="${id}-u"></div>
           <div class="intro-date" id="${id}-d">${esc(ch.sub || "")}</div>
         </section>`;
@@ -140,7 +166,7 @@ const sceneHTML = CHAPTERS.map((ch, i) => {
   if (ch.kind === "story")
     return `        <section class="scene clip" id="${id}" data-start="${ch.start}" data-duration="${dur}" data-track-index="1">
           <div class="loc" id="${id}-l"><span class="loc-dot"></span><span class="loc-txt">${esc(ch.cat)}</span></div>
-          <div class="headline" id="${id}-h">${esc(ch.head)}</div>
+          <div class="headline${sizeClass(id, ch.head, HEAD_STEPS)}" id="${id}-h">${esc(ch.head)}</div>
           ${ch.sub ? `<div class="subhead" id="${id}-s">${esc(ch.sub)}</div>` : ""}
         </section>`;
   if (ch.kind === "stat") {
@@ -167,7 +193,7 @@ const sceneHTML = CHAPTERS.map((ch, i) => {
             <div class="photo-grade"></div>
             ${ch.tag ? `<div class="photo-tag" id="${id}-g">${esc(ch.tag)}</div>` : ""}
           </div>
-          ${ch.head ? `<div class="headline sm" id="${id}-h">${esc(ch.head)}</div>` : ""}
+          ${ch.head ? `<div class="headline sm${sizeClass(id, ch.head, HEAD_STEPS)}" id="${id}-h">${esc(ch.head)}</div>` : ""}
           ${ch.sub ? `<div class="subhead sm" id="${id}-s">${esc(ch.sub)}</div>` : ""}
         </section>`;
   }
@@ -237,7 +263,7 @@ ${bars}
   return `        <section class="scene clip" id="${id}" data-start="${ch.start}" data-duration="${dur}" data-track-index="1">
           <div class="idx">${ch.idx ?? ""}</div>
           <span class="cat">${esc(ch.cat)}</span>
-          <div class="headline" id="${id}-h">${esc(ch.head)}</div>
+          <div class="headline${sizeClass(id, ch.head, HEAD_STEPS)}" id="${id}-h">${esc(ch.head)}</div>
           ${ch.sub ? `<div class="subhead" id="${id}-s">${esc(ch.sub)}</div>` : ""}
         </section>`;
 }).join("\n");

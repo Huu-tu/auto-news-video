@@ -100,3 +100,13 @@
       .chart-bar.hi { background: #d21422; }
       .chart-bar.up { background: #2fd07a; }
       .chart-xlabel { margin-top: 24px; font-size: 36px; font-weight: 600; color: #9aa4b1; }
+
+      /* Bậc thang cỡ chữ theo độ dài tiêu đề. Phải nằm cuối file: .headline.len2
+         và .headline.sm cùng độ đặc hiệu nên luật viết sau mới thắng. */
+      .intro-title.len2 { font-size: 120px; }
+      .intro-title.len3 { font-size: 96px; }
+      .intro-title.len4 { font-size: 76px; }
+      .headline.len2 { font-size: 84px; }
+      .headline.len3 { font-size: 68px; }
+      .headline.sm.len2 { font-size: 62px; }
+      .headline.sm.len3 { font-size: 52px; }

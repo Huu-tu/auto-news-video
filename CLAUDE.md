@@ -21,9 +21,20 @@ trình tự động.
 
 ## Nguyên tắc kiến trúc — đọc trước khi sửa
 
-**Chỉ một bước dùng LLM.** Trong cả pipeline, việc duy nhất cần trí tuệ là chia bản tin
-thành cảnh và đặt tiêu đề (`src/plan.mjs`). Mọi bước khác là script tất định. Đừng thêm
-lời gọi LLM vào các bước còn lại — chúng phải chạy lại ra kết quả y hệt.
+**Hai bước dùng LLM, không hơn.** Bước một: chia bản tin thành cảnh và đặt tiêu đề
+(`src/plan.mjs`). Bước hai: bậc 2 của thang sửa lỗi (`src/repair.mjs`) — **chỉ chạy khi
+sửa tất định đã thất bại**, chỉ được sửa `head`/`sub`/`kicker`, cấm đổi số cảnh, `line`,
+`kind`, `img`, và output luôn phải qua `validateChapters()` cộng
+`validateRepairedChapters()`. Mọi bước khác là script tất định — đừng thêm lời gọi LLM
+vào chúng.
+
+Đánh đổi đã chấp nhận: khi bậc 2 chạy, cùng một storyboard có thể ra hai video khác nhau.
+Bậc 0 (trần độ dài trong schema) và bậc 1 (bậc thang cỡ chữ) tồn tại để bậc 2 hiếm khi
+phải chạy. Xem `docs/superpowers/specs/2026-08-05-thang-sua-loi-thiet-ke.md`.
+
+**Lỗi chất lượng không được giết job.** `hyperframes check` trả hai loại: *chặn cứng*
+(lint error, runtime error → job fail thật) và *chất lượng* (layout, contrast → vào thang
+sửa, hết thang thì vẫn render kèm `addWarning`). Đừng biến lỗi layout thành fatal trở lại.
 
 **Đầu ra LLM luôn phải qua schema.** `validateChapters()` chặn trước khi dữ liệu đi tiếp;
 sai thì retry, hỏng tiếp thì rơi về `fallbackChapters()`. Job không bao giờ được chết vì
@@ -94,6 +105,14 @@ work/<job_id>/      input, log, artifact của từng job
   account: file do nó tạo thuộc về nó, mà nó có hạn mức lưu trữ = 0 → `storageQuotaExceeded`.
 - **LEAD/TAIL** (2.6s / 2.4s) phải khớp giữa `align_script.py` và lệnh `ffmpeg` pad audio.
   Lệch là caption trôi khỏi giọng đọc.
+- **Tiêu đề intro dài là vỡ bố cục.** `.stage` cao 1100px, `.scene` là `inset:0` +
+  `justify-content:center` nên nội dung cao hơn sẽ **tràn đều cả hai đầu** — phần tràn
+  lên trên đè vào `.topbar`. `check` báo `content_overlap`. Trần độ dài nằm ở `HEAD_MAX`
+  trong `src/plan.mjs`, bậc thang cỡ chữ nằm ở `INTRO_STEPS`/`HEAD_STEPS` trong
+  `build.mjs` — đổi một bên phải đổi bên kia.
+- **`.headline.sm` đã có nghĩa riêng** (tiêu đề dưới thẻ ảnh, 74px) — đừng dùng `.sm`
+  cho bậc thang độ dài. Bậc thang dùng `.len2`/`.len3`/`.len4`, và các luật này phải nằm
+  **cuối** `news.css` vì cùng độ đặc hiệu với `.headline.sm`.
 - **Bộ hẹn giờ cần `TZ=Asia/Ho_Chi_Minh`.** VPS mặc định chạy UTC — thiếu biến này, dòng
   lịch hẹn 09:00 sẽ đợi tới 16:00 giờ Việt Nam mới chạy, và video ra lệch 7 tiếng so với
   ý người đặt lịch. Dockerfile đã set sẵn `ENV TZ`; chạy ngoài Docker thì tự khai trong
