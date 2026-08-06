@@ -1,8 +1,2 @@
-# ASR tiếng Việt có word-timestamp, chạy CPU.
-# KHÔNG thay bằng whisper.cpp — chậm ~44x realtime trên CPU 4 nhân.
 faster-whisper>=1.0.0
-
-# Cấp binary ffmpeg/ffprobe. Sau khi pip install, chạy một lần:
-#   python3 -c "import static_ffmpeg.run as r; print(r.get_or_fetch_platform_executables_else_raise())"
-# rồi symlink ffmpeg/ffprobe vào ~/.local/bin
 static-ffmpeg>=2.5

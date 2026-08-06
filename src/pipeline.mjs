@@ -65,6 +65,40 @@ function progressReporter(jobId, minGapMs = 1000) {
   };
 }
 
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+export async function downloadImageUrls(jobId, list, imgDir) {
+  const items = Array.isArray(list) ? list : [];
+  if (items.length === 0) return 0;
+
+  mkdirSync(imgDir, { recursive: true });
+  let ok = 0;
+
+  for (const it of items) {
+    const ten = String(it?.ten || "").split(/[\\/]/).pop().replace(/[^\w.\-]/g, "");
+    const url = String(it?.url || "");
+
+    if (!/^[\w-]+\.[a-z0-9]+$/i.test(ten) || !/^https?:\/\//i.test(url)) {
+      await addWarning(jobId, "image_download_failed", `Bỏ qua mục ảnh không hợp lệ: ${JSON.stringify(it).slice(0, 120)}`);
+      continue;
+    }
+
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_IMAGE_BYTES) throw new Error(`${(buf.length / 1048576).toFixed(1)} MB > 10 MB`);
+      writeFileSync(join(imgDir, ten), buf);
+      ok++;
+    } catch (e) {
+      await addWarning(jobId, "image_download_failed", `Không tải được "${ten}": ${e.message}`);
+    }
+  }
+
+  log(jobId, `tải ảnh từ URL: ${ok}/${items.length}`);
+  return ok;
+}
+
 async function fail(jobId, code, stage, message, retryable = false) {
   await patchStatus(jobId, {
     status: "failed",
@@ -153,6 +187,8 @@ export async function runJob(jobId, { registerChild } = {}) {
     log(jobId, `storyboard: ${rows.length} dòng lời thoại`);
 
     const imgDir = join(inputDir, "images");
+    await downloadImageUrls(jobId, status.image_urls, imgDir);
+
     const images = existsSync(imgDir)
       ? readdirSync(imgDir).map((f) => {
           const id = f.replace(/\.[a-z0-9]+$/i, "");

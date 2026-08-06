@@ -304,6 +304,7 @@ app.post("/v1/jobs", async (c) => {
     options: payload.options || {},
     drive: payload.drive || {},
     metadata: payload.metadata || {},
+    image_urls: Array.isArray(payload.image_urls) ? payload.image_urls : [],
     queue_position: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -355,8 +356,6 @@ async function cancelJob(jobId) {
 
   await patchStatus(jobId, { cancel_requested: true });
 
-  // Còn nằm trong hàng đợi thì huỷ thẳng; đang chạy thì giết tiến trình con và
-  // để pipeline tự thấy cờ cancel_requested ở chốt checkCancelled kế tiếp.
   if (s.status === "queued") {
     await patchStatus(jobId, { status: "cancelled", stage: { name: "cancelled", progress: null, detail: null } });
   } else {
