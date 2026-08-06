@@ -17,8 +17,6 @@ const KINDS = {
 
 const KIND_ALIAS = { outro: "divider", ending: "divider", section: "divider", point: "story", fact: "stat" };
 
-// Trần độ dài head theo kind — khớp với bậc thang cỡ chữ trong
-// templates/vn-news-vertical/build.mjs. Đổi số ở đây thì phải đổi cả bên đó.
 export const HEAD_MAX = {
   intro: 28,
   divider: 40,
@@ -253,10 +251,6 @@ export async function planChapters({ rows, brand, images, bin = "claude", fallba
   return { cards: fallbackChapters(rows, brand), source: "fallback", attempts: retries + 1, errors: allErrors };
 }
 
-// Bậc 2 của thang sửa lỗi: đưa findings của hyperframes check cho Claude Code và
-// đòi lại bản đồ cảnh đã rút ngắn chữ. Chỉ chạy khi sửa tất định đã thất bại.
-// Ràng buộc thật sự nằm ở validateRepairedChapters() bên repair.mjs — prompt chỉ là
-// lời đề nghị, kiểm tra mới là hợp đồng.
 export async function repairChaptersWithLlm({ findings, chapters, bin = "claude", onLog = () => {} }) {
   const list = findings
     .slice(0, 10)

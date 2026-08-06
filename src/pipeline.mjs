@@ -67,6 +67,18 @@ function progressReporter(jobId, minGapMs = 1000) {
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+function looksLikeImage(b) {
+  if (b.length < 12) return false;
+  const hex = b.subarray(0, 4).toString("hex");
+  if (hex.startsWith("89504e47")) return true; // PNG
+  if (hex.startsWith("ffd8ff")) return true; // JPEG
+  if (hex.startsWith("47494638")) return true; // GIF
+  if (hex.startsWith("424d")) return true; // BMP
+  if (b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP") return true;
+  if (b.subarray(4, 8).toString("latin1") === "ftyp") return true; // AVIF/HEIC
+  return false;
+}
+
 export async function downloadImageUrls(jobId, list, imgDir) {
   const items = Array.isArray(list) ? list : [];
   if (items.length === 0) return 0;
@@ -88,6 +100,10 @@ export async function downloadImageUrls(jobId, list, imgDir) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       if (buf.length > MAX_IMAGE_BYTES) throw new Error(`${(buf.length / 1048576).toFixed(1)} MB > 10 MB`);
+      const ct = res.headers.get("content-type") || "";
+      if (!looksLikeImage(buf) && !/^image\//i.test(ct)) {
+        throw new Error(`nội dung không phải ảnh (content-type: ${ct || "không có"}, ${buf.length} B)`);
+      }
       writeFileSync(join(imgDir, ten), buf);
       ok++;
     } catch (e) {
@@ -106,6 +122,41 @@ async function fail(jobId, code, stage, message, retryable = false) {
     error: { code, stage, message: String(message).slice(0, 2000), retryable },
   });
   log(jobId, `FAILED [${code}] ${message}`);
+}
+
+const CALLBACK_TRIES = 3;
+
+async function notifyCallback(jobId, url) {
+  if (!url) return;
+  const s = (await readStatus(jobId)) || {};
+  const body = JSON.stringify({
+    job_id: jobId,
+    status: s.status || "unknown",
+    artifacts: s.artifacts || {},
+    drive: s.drive || {},
+    timings_sec: s.timings_sec || {},
+    warnings: s.warnings || [],
+    error: s.error || null,
+    metadata: s.metadata || {},
+  });
+
+  for (let i = 1; i <= CALLBACK_TRIES; i++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      log(jobId, `callback đã gửi (${s.status})`);
+      return;
+    } catch (e) {
+      log(jobId, `callback hỏng lần ${i}/${CALLBACK_TRIES}: ${e.message}`);
+      if (i < CALLBACK_TRIES) await new Promise((r) => setTimeout(r, i * 5000));
+    }
+  }
+  await addWarning(jobId, "callback_failed", `Không gọi được callback_url sau ${CALLBACK_TRIES} lần — n8n sẽ đợi tới khi hết Limit Wait Time`);
 }
 
 async function alert(jobId, error) {
@@ -490,8 +541,10 @@ export async function runJob(jobId, { registerChild } = {}) {
     }
     const code = e.code && typeof e.code === "string" ? e.code : "internal_error";
     const stage = (await readStatus(jobId))?.status || "unknown";
-    fail(jobId, code, stage, e.message);
+    await fail(jobId, code, stage, e.message);
     await alert(jobId, { code, stage, message: String(e.message).slice(0, 500) });
+  } finally {
+    await notifyCallback(jobId, status.callback_url);
   }
 }
 

@@ -272,6 +272,11 @@ app.post("/v1/jobs", async (c) => {
     return c.json({ error: { code: "missing_storyboard", message: "Cần field 'storyboard' (file .md) hoặc payload.storyboard" } }, 400);
   }
 
+  const callbackUrl = payload.callback_url == null ? null : String(payload.callback_url);
+  if (callbackUrl !== null && !/^https?:\/\//i.test(callbackUrl)) {
+    return c.json({ error: { code: "bad_callback_url", message: "callback_url phải bắt đầu bằng http:// hoặc https://" } }, 400);
+  }
+
   const jobId = newJobId();
   const dir = jobDir(jobId);
   const inputDir = join(dir, "input");
@@ -305,6 +310,7 @@ app.post("/v1/jobs", async (c) => {
     drive: payload.drive || {},
     metadata: payload.metadata || {},
     image_urls: Array.isArray(payload.image_urls) ? payload.image_urls : [],
+    callback_url: callbackUrl,
     queue_position: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
